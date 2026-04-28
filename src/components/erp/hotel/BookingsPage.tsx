@@ -20,7 +20,7 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { Plus, Search, LogIn, LogOut, XCircle, Eye } from 'lucide-react';
+import { Plus, Search, LogIn, LogOut, XCircle, Eye, DollarSign } from 'lucide-react';
 
 interface Booking {
   id: string;
@@ -79,6 +79,12 @@ export function BookingsPage() {
   const [newCustomerEmail, setNewCustomerEmail] = useState('');
   const [showNewCustomer, setShowNewCustomer] = useState(false);
 
+  // Check-in dialog state
+  const [checkInDialogOpen, setCheckInDialogOpen] = useState(false);
+  const [checkInBookingId, setCheckInBookingId] = useState<string | null>(null);
+  const [checkInPayment, setCheckInPayment] = useState('0');
+  const [checkInPaymentMethod, setCheckInPaymentMethod] = useState('CASH');
+
   const buildQuery = () => {
     const params: string[] = [`page=${page}`, 'limit=20'];
     if (statusFilter !== 'all') params.push(`status=${statusFilter}`);
@@ -135,10 +141,15 @@ export function BookingsPage() {
   });
 
   const checkInMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/bookings/check-in/${id}`),
+    mutationFn: ({ id, initialPayment, paymentMethod }: { id: string; initialPayment: number; paymentMethod: string }) =>
+      api.post(`/bookings/check-in/${id}`, { initialPayment, paymentMethod }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['bookings'] });
       toast.success('Guest checked in successfully');
+      setCheckInDialogOpen(false);
+      setCheckInBookingId(null);
+      setCheckInPayment('0');
+      setCheckInPaymentMethod('CASH');
     },
     onError: () => toast.error('Failed to check in'),
   });
@@ -303,7 +314,12 @@ export function BookingsPage() {
                           variant="outline"
                           size="sm"
                           className="h-7 text-xs border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-                          onClick={() => checkInMutation.mutate(booking.id)}
+                          onClick={() => {
+                            setCheckInBookingId(booking.id);
+                            setCheckInPayment('0');
+                            setCheckInPaymentMethod('CASH');
+                            setCheckInDialogOpen(true);
+                          }}
                           disabled={checkInMutation.isPending}
                         >
                           <LogIn className="w-3 h-3 mr-1" />
@@ -358,6 +374,92 @@ export function BookingsPage() {
           </Button>
         </div>
       )}
+
+      {/* Check-in Payment Dialog */}
+      <Dialog open={checkInDialogOpen} onOpenChange={setCheckInDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LogIn className="h-5 w-5 text-emerald-600" />
+              Check-in Guest
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Card className="bg-muted/50">
+              <CardContent className="p-3 space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Total Room Charge</span>
+                  <span className="font-medium">৳{(() => {
+                    const b = bookings.find(bk => bk.id === checkInBookingId);
+                    return b ? b.totalRoomCharge.toLocaleString() : '0';
+                  })()}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">Advance Paid</span>
+                  <span className="font-medium">৳{(() => {
+                    const b = bookings.find(bk => bk.id === checkInBookingId);
+                    return b ? b.advancePayment.toLocaleString() : '0';
+                  })()}</span>
+                </div>
+                <div className="flex justify-between text-sm font-bold border-t pt-1">
+                  <span>Current Due</span>
+                  <span className="text-red-600">৳{(() => {
+                    const b = bookings.find(bk => bk.id === checkInBookingId);
+                    return b ? b.dueAmount.toLocaleString() : '0';
+                  })()}</span>
+                </div>
+              </CardContent>
+            </Card>
+            <div className="space-y-2">
+              <Label>Initial Payment at Check-in (BDT)</Label>
+              <Input
+                type="number"
+                value={checkInPayment}
+                onChange={(e) => setCheckInPayment(e.target.value)}
+                placeholder="0"
+                min="0"
+              />
+              <p className="text-xs text-muted-foreground">
+                Remaining due after payment: ৳{(() => {
+                  const b = bookings.find(bk => bk.id === checkInBookingId);
+                  const due = b ? b.dueAmount - (parseFloat(checkInPayment) || 0) : 0;
+                  return Math.max(due, 0).toLocaleString();
+                })()}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Payment Method</Label>
+              <Select value={checkInPaymentMethod} onValueChange={setCheckInPaymentMethod}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select method" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="CASH">Cash</SelectItem>
+                  <SelectItem value="CARD">Card</SelectItem>
+                  <SelectItem value="MOBILE_BANKING">Mobile Banking</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCheckInDialogOpen(false)}>Cancel</Button>
+            <Button
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              disabled={checkInMutation.isPending}
+              onClick={() => {
+                if (!checkInBookingId) return;
+                checkInMutation.mutate({
+                  id: checkInBookingId,
+                  initialPayment: parseFloat(checkInPayment) || 0,
+                  paymentMethod: checkInPaymentMethod,
+                });
+              }}
+            >
+              {checkInMutation.isPending ? 'Checking in...' : 'Confirm Check-in'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create Booking Dialog (Multi-step) */}
       <Dialog open={createDialogOpen} onOpenChange={(open) => { if (!open) closeCreateDialog(); }}>

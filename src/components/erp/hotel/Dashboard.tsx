@@ -17,7 +17,9 @@ import {
   DollarSign,
   TrendingUp,
   ShoppingCart,
+  ChefHat,
 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import {
   PieChart,
   Pie,
@@ -71,6 +73,26 @@ interface DashboardData {
     todaysFoodSales: number;
     activeOrders: number;
   };
+  sales?: {
+    todaysSales: number;
+    todaysOrderCount: number;
+    averageOrderValue: number;
+  };
+  tables?: {
+    total: number;
+    available: number;
+    occupied: number;
+    reserved: number;
+  };
+  kotQueue?: {
+    pending: number;
+    cooking: number;
+    items: any[];
+  };
+  activeOrders?: {
+    count: number;
+    items: any[];
+  };
   charts?: {
     revenueByDay: { date: string; amount: number }[];
   };
@@ -99,7 +121,12 @@ export function Dashboard() {
     return <HotelAdminDashboard data={dashboard} />;
   }
 
-  return <div className="text-center text-muted-foreground py-10">Restaurant Dashboard</div>;
+  // For RESTAURANT_STAFF
+  if (dashboard.role === 'RESTAURANT_STAFF') {
+    return <RestaurantDashboard data={dashboard} />;
+  }
+
+  return <div className="text-center text-muted-foreground py-10">Dashboard</div>;
 }
 
 function HotelAdminDashboard({ data }: { data: DashboardData }) {
@@ -440,6 +467,149 @@ function DashboardSkeleton() {
         <Card>
           <CardContent className="p-6">
             <Skeleton className="h-48 w-full" />
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function RestaurantDashboard({ data }: { data: DashboardData }) {
+  const restaurant = data.restaurant || { todaysOrders: 0, todaysFoodSales: 0, activeOrders: 0 };
+  const sales = data.sales || { todaysSales: 0, todaysOrderCount: 0, averageOrderValue: 0 };
+  const tables = data.tables || { total: 0, available: 0, occupied: 0, reserved: 0 };
+  const kotQueue = data.kotQueue || { pending: 0, cooking: 0, items: [] };
+  const activeOrders = data.activeOrders || { count: 0, items: [] };
+  const rooms = data.rooms;
+
+  return (
+    <div className="space-y-6">
+      {/* CloudView Branding */}
+      <div className="flex items-center gap-3">
+        <div className="p-2.5 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 shadow-md">
+          <ChefHat className="h-6 w-6 text-white" />
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-800">CloudView Restaurant</h2>
+          <p className="text-sm text-slate-500">Dashboard Overview</p>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard
+          title="Today's Orders"
+          value={sales.todaysOrderCount || restaurant.todaysOrders}
+          icon={<ShoppingCart className="w-5 h-5" />}
+          color="amber"
+        />
+        <StatCard
+          title="Today's Sales"
+          value={`৳${(sales.todaysSales || restaurant.todaysFoodSales).toLocaleString()}`}
+          icon={<DollarSign className="w-5 h-5" />}
+          color="emerald"
+        />
+        <StatCard
+          title="Active Orders"
+          value={activeOrders.count || restaurant.activeOrders}
+          icon={<TrendingUp className="w-5 h-5" />}
+          color="orange"
+        />
+        <StatCard
+          title="Occupied Rooms"
+          value={rooms?.occupied || 0}
+          icon={<BedDouble className="w-5 h-5" />}
+          color="red"
+        />
+      </div>
+
+      {/* Quick Actions */}
+      <div className="flex flex-wrap gap-3">
+        <Button className="bg-amber-600 hover:bg-amber-700 text-white">
+          <ShoppingCart className="w-4 h-4 mr-2" />
+          New Order (POS)
+        </Button>
+        <Button variant="outline" className="border-amber-600 text-amber-700 hover:bg-amber-50">
+          <ChefHat className="w-4 h-4 mr-2" />
+          Kitchen Display
+        </Button>
+      </div>
+
+      {/* KOT Queue & Tables */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* KOT Queue */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Kitchen Order Tickets</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-amber-50 border border-amber-200">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">⏳</span>
+                  <span className="font-medium text-amber-800">Pending</span>
+                </div>
+                <Badge variant="outline" className="bg-amber-100 text-amber-700 border-amber-200">
+                  {kotQueue.pending}
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-orange-50 border border-orange-200">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">🍳</span>
+                  <span className="font-medium text-orange-800">Cooking</span>
+                </div>
+                <Badge variant="outline" className="bg-orange-100 text-orange-700 border-orange-200">
+                  {kotQueue.cooking}
+                </Badge>
+              </div>
+              {(kotQueue.items || []).length > 0 && (
+                <div className="mt-2 max-h-32 overflow-y-auto custom-scrollbar">
+                  {(kotQueue.items || []).map((item: any, i: number) => (
+                    <div key={i} className="text-xs text-slate-500 py-1 border-b border-slate-100">
+                      {item.name} × {item.quantity}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Tables & Room Service */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Tables & Room Service</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+                  <p className="text-2xl font-bold text-emerald-700">{tables.available}</p>
+                  <p className="text-xs text-emerald-600">Available</p>
+                </div>
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-center">
+                  <p className="text-2xl font-bold text-red-700">{tables.occupied}</p>
+                  <p className="text-xs text-red-600">Occupied</p>
+                </div>
+                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-center">
+                  <p className="text-2xl font-bold text-amber-700">{tables.reserved}</p>
+                  <p className="text-xs text-amber-600">Reserved</p>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                  <p className="text-2xl font-bold text-slate-700">{rooms?.occupied || 0}</p>
+                  <p className="text-xs text-slate-600">Room Service</p>
+                </div>
+              </div>
+
+              {sales.averageOrderValue > 0 && (
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-slate-600">Avg Order Value</span>
+                    <span className="font-semibold text-slate-800">৳{sales.averageOrderValue.toLocaleString()}</span>
+                  </div>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>

@@ -140,6 +140,12 @@ export async function PUT(request: NextRequest) {
     if (phone !== undefined) updateData.phone = phone;
     if (active !== undefined) updateData.active = active;
 
+    // Handle password update separately (needs hashing)
+    const passwordToUpdate = body.password;
+    if (passwordToUpdate && typeof passwordToUpdate === 'string' && passwordToUpdate.trim() !== '') {
+      updateData.password = await hashPassword(passwordToUpdate);
+    }
+
     const user = await db.user.update({
       where: { id },
       data: updateData,

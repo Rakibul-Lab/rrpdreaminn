@@ -7,7 +7,7 @@ import {
   LayoutDashboard, FileText, CreditCard, BarChart3, Users, Settings,
   ScrollText, Package, LogOut, Hotel, UtensilsCrossed, Menu, X,
   Building2, Bed, CalendarCheck, UserCircle, SprayCan, ShoppingCart,
-  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag
+  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -54,13 +54,14 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   // Hotel - RRP Dream Inn
-  { key: 'hotel-dashboard', label: 'Hotel Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
+  { key: 'hotel-dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'rooms', label: 'Rooms', icon: <Bed className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'room-types', label: 'Room Types', icon: <Tag className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'bookings', label: 'Bookings', icon: <CalendarCheck className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'customers', label: 'Guests', icon: <UserCircle className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'housekeeping', label: 'Housekeeping', icon: <SprayCan className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   // Restaurant - CloudView
+  { key: 'hotel-dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, allowedRoles: ['RESTAURANT_STAFF'], group: 'CloudView' },
   { key: 'pos', label: 'POS Terminal', icon: <ShoppingCart className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
   { key: 'menu', label: 'Menu Management', icon: <UtensilsCrossed className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
   { key: 'orders', label: 'Orders', icon: <ClipboardList className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
@@ -250,7 +251,7 @@ function LoginForm() {
 function getDefaultPage(role: string | undefined): PageKey {
   if (role === 'ADMIN') return 'admin-dashboard'
   if (role === 'HOTEL_STAFF') return 'hotel-dashboard'
-  if (role === 'RESTAURANT_STAFF') return 'pos'
+  if (role === 'RESTAURANT_STAFF') return 'hotel-dashboard'
   return 'hotel-dashboard'
 }
 
@@ -464,6 +465,9 @@ function ERPApp() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="icon" className="relative h-9 w-9" onClick={() => setCurrentPage('orders')}>
+              <Bell className="h-4 w-4 text-slate-500" />
+            </Button>
             <Badge variant="outline" className={`hidden sm:flex text-xs items-center gap-1 ${roleBadgeColors[user?.role || ''] || ''}`}>
               {user?.role === 'ADMIN' && <LayoutDashboard className="h-3 w-3" />}
               {user?.role === 'HOTEL_STAFF' && <Hotel className="h-3 w-3" />}
