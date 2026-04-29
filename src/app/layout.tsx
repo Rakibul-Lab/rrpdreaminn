@@ -19,19 +19,19 @@ export const metadata: Metadata = {
   keywords: ["ERP", "Hotel", "Restaurant", "Management", "Booking", "POS"],
   authors: [{ name: "RRP Dream Inn" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/brand-logo.png",
   },
   openGraph: {
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
-    url: "https://chat.z.ai",
-    siteName: "Z.ai",
+    title: "RRP Dream Inn + CloudView ERP",
+    description: "Hotel & Restaurant ERP System for operations, billing, and POS.",
+    url: "http://localhost:3000",
+    siteName: "RRP Dream Inn + CloudView",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
+    title: "RRP Dream Inn + CloudView ERP",
+    description: "Hotel & Restaurant ERP System for operations, billing, and POS.",
   },
 };
 

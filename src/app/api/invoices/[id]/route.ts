@@ -25,6 +25,20 @@ export async function GET(
               include: { type: true },
             },
             charges: true,
+            restaurantOrders: {
+              where: { status: { not: 'CANCELLED' } },
+              select: {
+                id: true,
+                orderNumber: true,
+                subtotal: true,
+                discount: true,
+                vatPercent: true,
+                vatAmount: true,
+                totalAmount: true,
+                createdAt: true,
+              },
+              orderBy: { createdAt: 'asc' },
+            },
           },
         },
         items: {
@@ -43,7 +57,16 @@ export async function GET(
       return notFoundResponse('Invoice');
     }
 
-    return successResponse(invoice);
+    let declaredVatPercent = 15;
+    const vatSetting = await db.setting.findUnique({ where: { key: 'vat_percent' } });
+    if (vatSetting) {
+      declaredVatPercent = parseFloat(vatSetting.value) || 15;
+    }
+
+    return successResponse({
+      ...invoice,
+      declaredVatPercent,
+    });
   } catch (error) {
     console.error('Error fetching invoice:', error);
     return errorResponse('Failed to fetch invoice', 500);

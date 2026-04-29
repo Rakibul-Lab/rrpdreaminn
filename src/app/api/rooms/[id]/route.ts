@@ -34,6 +34,13 @@ export async function PUT(
   try {
     const authResult = requireRole(request, 'ADMIN' as RoleType, 'HOTEL_STAFF' as RoleType);
     if (authResult instanceof Response) return authResult;
+    const authUser = await db.user.findUnique({
+      where: { id: authResult.id },
+      select: { id: true, active: true },
+    });
+    if (!authUser || !authUser.active) {
+      return errorResponse('Session expired. Please log out and log in again.', 401);
+    }
 
     const { id } = await params;
     const body = await request.json();
@@ -63,11 +70,43 @@ export async function PUT(
       include: { type: true },
     });
 
+    // If room status is set to CLEANING manually, ensure housekeeping gets a task.
+    const statusChangedToCleaning =
+      body.status !== undefined &&
+      body.status === 'CLEANING' &&
+      existing.status !== 'CLEANING';
+
+    if (statusChangedToCleaning) {
+      const existingActiveTask = await db.housekeepingTask.findFirst({
+        where: {
+          roomId: id,
+          status: { in: ['PENDING', 'IN_PROGRESS'] },
+          taskType: 'cleaning',
+        },
+      });
+
+      if (!existingActiveTask) {
+        await db.housekeepingTask.create({
+          data: {
+            roomId: id,
+            taskType: 'cleaning',
+            status: 'PENDING',
+            assignedTo: authUser.id,
+            notes: `Auto-created from room status change for room ${room.roomNumber}`,
+          },
+        });
+      }
+    }
+
     await logActivity(
       authResult.id,
       'UPDATE_ROOM',
       'hotel',
-      JSON.stringify({ roomId: id, changes: updateData })
+      JSON.stringify({
+        roomId: id,
+        changes: updateData,
+        housekeepingTaskAutoCreated: statusChangedToCleaning,
+      })
     );
 
     return successResponse(room, 'Room updated successfully');

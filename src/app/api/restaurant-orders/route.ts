@@ -343,6 +343,17 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // For room service linked with an active booking, add order total to booking due immediately.
+      if (orderType === 'ROOM_SERVICE' && bookingId) {
+        const booking = await tx.booking.findUnique({ where: { id: bookingId } });
+        if (booking) {
+          await tx.booking.update({
+            where: { id: bookingId },
+            data: { dueAmount: booking.dueAmount + totalAmount },
+          });
+        }
+      }
+
       return newOrder;
     });
 

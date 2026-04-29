@@ -1,56 +1,30 @@
-// Hotel + Restaurant ERP System
-// RRP Dream Inn (Hotel) + CloudView (Restaurant)
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
-// ============================================
-// AUTH & RBAC
-// ============================================
-
-enum RoleType {
-  ADMIN
-  HOTEL_STAFF
-  RESTAURANT_STAFF
-}
-
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String
-  password  String
-  role      RoleType @default(HOTEL_STAFF)
-  active    Boolean  @default(true)
-  phone     String?
-  avatar    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  bookings           Booking[]
-  restaurantOrders   RestaurantOrder[]
-  activityLogs       ActivityLog[]
-  payments           Payment[]
-  housekeepingTasks  HousekeepingTask[]
+  id                String             @id @default(cuid())
+  email             String             @unique
+  name              String
+  password          String
+  role              RoleType           @default(HOTEL_STAFF)
+  active            Boolean            @default(true)
+  phone             String?
+  avatar            String?            @db.LongText
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  activityLogs      ActivityLog[]
+  bookings          Booking[]
+  housekeepingTasks HousekeepingTask[]
+  payments          Payment[]
+  restaurantOrders  RestaurantOrder[]
 
   @@map("users")
-}
-
-// ============================================
-// HOTEL - ROOM MANAGEMENT
-// ============================================
-
-enum RoomStatus {
-  AVAILABLE
-  OCCUPIED
-  CLEANING
-  MAINTENANCE
 }
 
 model RoomType {
@@ -60,107 +34,79 @@ model RoomType {
   basePrice   Float
   capacity    Int      @default(2)
   hourlyRate  Float?
-  amenities   String?  // JSON string of amenities
+  amenities   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
-  rooms Room[]
+  rooms       Room[]
 
   @@map("room_types")
 }
 
 model Room {
-  id         String     @id @default(cuid())
-  roomNumber String     @unique
-  floor      Int        @default(1)
-  status     RoomStatus @default(AVAILABLE)
-  typeId     String
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
-
-  type     RoomType     @relation(fields: [typeId], references: [id])
-  bookings Booking[]
-  housekeeping HousekeepingTask[]
+  id               String             @id @default(cuid())
+  roomNumber       String             @unique
+  floor            Int                @default(1)
+  status           RoomStatus         @default(AVAILABLE)
+  typeId           String
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  bookings         Booking[]
+  housekeeping     HousekeepingTask[]
   restaurantOrders RestaurantOrder[]
+  type             RoomType           @relation(fields: [typeId], references: [id])
 
+  @@index([typeId], map: "rooms_typeId_fkey")
   @@map("rooms")
 }
 
-// ============================================
-// HOTEL - GUEST/CUSTOMER MANAGEMENT
-// ============================================
-
 model Customer {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
   email     String?
   phone     String
   address   String?
-  idType    String?  // passport, national_id, etc.
+  idType    String?
   idNumber  String?
-  idDocPath String?  // uploaded ID document path
+  idDocPath String?
   notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  bookings Booking[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  bookings  Booking[]
 
   @@map("customers")
 }
 
-// ============================================
-// HOTEL - BOOKING MANAGEMENT
-// ============================================
-
-enum BookingStatus {
-  RESERVED
-  CHECKED_IN
-  CHECKED_OUT
-  CANCELLED
-}
-
 model Booking {
-  id              String        @id @default(cuid())
-  customerId      String
-  roomId          String
-  status          BookingStatus @default(RESERVED)
-  checkIn         DateTime
-  checkOut        DateTime
-  actualCheckIn   DateTime?
-  actualCheckOut  DateTime?
-  adults          Int           @default(1)
-  children        Int           @default(0)
-  totalRoomCharge Float         @default(0)
-  advancePayment  Float         @default(0)
-  initialPayment  Float         @default(0)
-  dueAmount       Float         @default(0)
-  notes           String?
-  createdBy       String
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-
-  customer  Customer          @relation(fields: [customerId], references: [id])
-  room      Room              @relation(fields: [roomId], references: [id])
-  creator   User              @relation(fields: [createdBy], references: [id])
-  charges   RoomCharge[]
-  payments  Payment[]
-  invoices  Invoice[]
+  id               String            @id @default(cuid())
+  customerId       String
+  roomId           String
+  status           BookingStatus     @default(RESERVED)
+  checkIn          DateTime
+  checkOut         DateTime
+  actualCheckIn    DateTime?
+  actualCheckOut   DateTime?
+  adults           Int               @default(1)
+  children         Int               @default(0)
+  totalRoomCharge  Float             @default(0)
+  advancePayment   Float             @default(0)
+  initialPayment   Float             @default(0)
+  dueAmount        Float             @default(0)
+  notes            String?
+  createdBy        String
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  creator          User              @relation(fields: [createdBy], references: [id])
+  customer         Customer          @relation(fields: [customerId], references: [id])
+  room             Room              @relation(fields: [roomId], references: [id])
+  invoices         Invoice[]
+  payments         Payment[]
   restaurantOrders RestaurantOrder[]
+  charges          RoomCharge[]
 
+  @@index([createdBy], map: "bookings_createdBy_fkey")
+  @@index([customerId], map: "bookings_customerId_fkey")
+  @@index([roomId], map: "bookings_roomId_fkey")
   @@map("bookings")
-}
-
-// ============================================
-// HOTEL - ROOM CHARGES
-// ============================================
-
-enum ChargeType {
-  ROOM_RATE
-  LATE_CHECKOUT
-  EXTRA_SERVICE
-  MINIBAR
-  LAUNDRY
-  OTHER
 }
 
 model RoomCharge {
@@ -172,70 +118,283 @@ model RoomCharge {
   quantity    Int        @default(1)
   chargeDate  DateTime   @default(now())
   createdAt   DateTime   @default(now())
+  booking     Booking    @relation(fields: [bookingId], references: [id])
 
-  booking Booking @relation(fields: [bookingId], references: [id])
-
+  @@index([bookingId], map: "room_charges_bookingId_fkey")
   @@map("room_charges")
 }
 
-// ============================================
-// RESTAURANT - MENU MANAGEMENT
-// ============================================
-
 model MenuCategory {
-  id          String   @id @default(cuid())
+  id          String     @id @default(cuid())
   name        String
   description String?
-  active      Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  items MenuItem[]
+  active      Boolean    @default(true)
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  items       MenuItem[]
 
   @@map("menu_categories")
 }
 
 model MenuItem {
-  id          String   @id @default(cuid())
-  categoryId  String
-  name        String
-  description String?
-  price       Float
-  image       String?
-  available   Boolean  @default(true)
-  isVeg       Boolean  @default(true)
-  preparationTime Int? // in minutes
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String       @id @default(cuid())
+  categoryId      String
+  name            String
+  description     String?
+  price           Float
+  image           String?      @db.LongText
+  available       Boolean      @default(true)
+  isVeg           Boolean      @default(true)
+  preparationTime Int?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  category        MenuCategory @relation(fields: [categoryId], references: [id])
+  orderItems      OrderItem[]
 
-  category    MenuCategory  @relation(fields: [categoryId], references: [id])
-  orderItems  OrderItem[]
-
+  @@index([categoryId], map: "menu_items_categoryId_fkey")
   @@map("menu_items")
 }
 
-// ============================================
-// RESTAURANT - TABLE MANAGEMENT
-// ============================================
-
 model RestaurantTable {
-  id        String   @id @default(cuid())
+  id          String            @id @default(cuid())
   tableNumber String
-  capacity  Int      @default(4)
-  status    String   @default("available") // available, occupied, reserved
-  location  String?  // indoor, outdoor, vip
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  orders RestaurantOrder[]
+  capacity    Int               @default(4)
+  status      String            @default("available")
+  location    String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  orders      RestaurantOrder[]
 
   @@map("restaurant_tables")
 }
 
-// ============================================
-// RESTAURANT - ORDER MANAGEMENT
-// ============================================
+model RestaurantOrder {
+  id            String           @id @default(cuid())
+  orderNumber   String           @unique
+  orderType     OrderType        @default(DINE_IN)
+  status        OrderStatus      @default(PENDING)
+  roomId        String?
+  tableId       String?
+  bookingId     String?
+  customerName  String?
+  customerPhone String?
+  subtotal      Float            @default(0)
+  discount      Float            @default(0)
+  vatAmount     Float            @default(0)
+  vatPercent    Float            @default(0)
+  totalAmount   Float            @default(0)
+  notes         String?
+  createdBy     String
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  items         OrderItem[]
+  payments      Payment[]
+  booking       Booking?         @relation(fields: [bookingId], references: [id])
+  creator       User             @relation(fields: [createdBy], references: [id])
+  room          Room?            @relation(fields: [roomId], references: [id])
+  table         RestaurantTable? @relation(fields: [tableId], references: [id])
+
+  @@index([bookingId], map: "restaurant_orders_bookingId_fkey")
+  @@index([createdBy], map: "restaurant_orders_createdBy_fkey")
+  @@index([roomId], map: "restaurant_orders_roomId_fkey")
+  @@index([tableId], map: "restaurant_orders_tableId_fkey")
+  @@map("restaurant_orders")
+}
+
+model OrderItem {
+  id         String          @id @default(cuid())
+  orderId    String
+  menuItemId String
+  quantity   Int             @default(1)
+  price      Float
+  notes      String?
+  kotStatus  String          @default("pending")
+  menuItem   MenuItem        @relation(fields: [menuItemId], references: [id])
+  order      RestaurantOrder @relation(fields: [orderId], references: [id])
+
+  @@index([menuItemId], map: "order_items_menuItemId_fkey")
+  @@index([orderId], map: "order_items_orderId_fkey")
+  @@map("order_items")
+}
+
+model Payment {
+  id          String           @id @default(cuid())
+  amount      Float
+  method      PaymentMethod    @default(CASH)
+  paymentType PaymentType
+  bookingId   String?
+  orderId     String?
+  invoiceId   String?
+  reference   String?
+  notes       String?
+  receivedBy  String
+  createdAt   DateTime         @default(now())
+  booking     Booking?         @relation(fields: [bookingId], references: [id])
+  invoice     Invoice?         @relation(fields: [invoiceId], references: [id])
+  order       RestaurantOrder? @relation(fields: [orderId], references: [id])
+  receiver    User             @relation(fields: [receivedBy], references: [id])
+
+  @@index([bookingId], map: "payments_bookingId_fkey")
+  @@index([invoiceId], map: "payments_invoiceId_fkey")
+  @@index([orderId], map: "payments_orderId_fkey")
+  @@index([receivedBy], map: "payments_receivedBy_fkey")
+  @@map("payments")
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  bookingId     String
+  roomCharges   Float         @default(0)
+  foodCharges   Float         @default(0)
+  extraCharges  Float         @default(0)
+  subtotal      Float         @default(0)
+  discount      Float         @default(0)
+  vatAmount     Float         @default(0)
+  totalAmount   Float         @default(0)
+  paidAmount    Float         @default(0)
+  dueAmount     Float         @default(0)
+  status        InvoiceStatus @default(DRAFT)
+  issuedAt      DateTime?
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  items         InvoiceItem[]
+  booking       Booking       @relation(fields: [bookingId], references: [id])
+  payments      Payment[]
+
+  @@index([bookingId], map: "invoices_bookingId_fkey")
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  itemType    String
+  referenceId String?
+  description String
+  quantity    Int     @default(1)
+  unitPrice   Float
+  total       Float
+  invoice     Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@index([invoiceId], map: "invoice_items_invoiceId_fkey")
+  @@map("invoice_items")
+}
+
+model HousekeepingTask {
+  id          String             @id @default(cuid())
+  roomId      String
+  taskType    String
+  status      HousekeepingStatus @default(PENDING)
+  assignedTo  String
+  notes       String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  assigned    User               @relation(fields: [assignedTo], references: [id])
+  room        Room               @relation(fields: [roomId], references: [id])
+
+  @@index([assignedTo], map: "housekeeping_tasks_assignedTo_fkey")
+  @@index([roomId], map: "housekeeping_tasks_roomId_fkey")
+  @@map("housekeeping_tasks")
+}
+
+model InventoryItem {
+  id           String                 @id @default(cuid())
+  name         String
+  category     String?
+  unit         String
+  quantity     Float                  @default(0)
+  minQuantity  Float                  @default(0)
+  costPerUnit  Float?
+  supplier     String?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  transactions InventoryTransaction[]
+
+  @@map("inventory_items")
+}
+
+model InventoryTransaction {
+  id        String        @id @default(cuid())
+  itemId    String
+  type      String
+  quantity  Float
+  notes     String?
+  createdBy String
+  createdAt DateTime      @default(now())
+  item      InventoryItem @relation(fields: [itemId], references: [id])
+
+  @@index([itemId], map: "inventory_transactions_itemId_fkey")
+  @@map("inventory_transactions")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  title     String
+  message   String
+  type      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("notifications")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  module    String
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId], map: "activity_logs_userId_fkey")
+  @@map("activity_logs")
+}
+
+model Setting {
+  id    String  @id @default(cuid())
+  key   String  @unique
+  value String
+  group String?
+
+  @@map("settings")
+}
+
+enum RoleType {
+  ADMIN
+  HOTEL_STAFF
+  RESTAURANT_STAFF
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  CLEANING
+  MAINTENANCE
+}
+
+enum BookingStatus {
+  RESERVED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+}
+
+enum ChargeType {
+  ROOM_RATE
+  LATE_CHECKOUT
+  EXTRA_SERVICE
+  MINIBAR
+  LAUNDRY
+  OTHER
+}
 
 enum OrderType {
   DINE_IN
@@ -251,55 +410,6 @@ enum OrderStatus {
   CANCELLED
 }
 
-model RestaurantOrder {
-  id            String      @id @default(cuid())
-  orderNumber   String      @unique
-  orderType     OrderType   @default(DINE_IN)
-  status        OrderStatus @default(PENDING)
-  roomId        String?     // nullable - only for room_service
-  tableId       String?     // nullable - only for dine_in
-  bookingId     String?     // auto-linked from room
-  customerName  String?     // for takeaway
-  customerPhone String?     // for takeaway
-  subtotal      Float       @default(0)
-  discount      Float       @default(0)
-  vatAmount     Float       @default(0)
-  vatPercent    Float       @default(0)
-  totalAmount   Float       @default(0)
-  notes         String?
-  createdBy     String
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-
-  room       Room?            @relation(fields: [roomId], references: [id])
-  table      RestaurantTable? @relation(fields: [tableId], references: [id])
-  booking    Booking?         @relation(fields: [bookingId], references: [id])
-  creator    User             @relation(fields: [createdBy], references: [id])
-  items      OrderItem[]
-  payments   Payment[]
-
-  @@map("restaurant_orders")
-}
-
-model OrderItem {
-  id        String   @id @default(cuid())
-  orderId   String
-  menuItemId String
-  quantity  Int      @default(1)
-  price     Float    // price at time of order
-  notes     String?
-  kotStatus String   @default("pending") // pending, cooking, ready
-
-  order     RestaurantOrder @relation(fields: [orderId], references: [id])
-  menuItem  MenuItem        @relation(fields: [menuItemId], references: [id])
-
-  @@map("order_items")
-}
-
-// ============================================
-// PAYMENT SYSTEM
-// ============================================
-
 enum PaymentMethod {
   CASH
   CARD
@@ -314,31 +424,6 @@ enum PaymentType {
   RESTAURANT
 }
 
-model Payment {
-  id            String        @id @default(cuid())
-  amount        Float
-  method        PaymentMethod @default(CASH)
-  paymentType   PaymentType
-  bookingId     String?       // for hotel payments
-  orderId       String?       // for restaurant payments
-  invoiceId     String?       // linked to invoice
-  reference     String?       // transaction reference
-  notes         String?
-  receivedBy    String
-  createdAt     DateTime      @default(now())
-
-  booking   Booking?          @relation(fields: [bookingId], references: [id])
-  order     RestaurantOrder?  @relation(fields: [orderId], references: [id])
-  invoice   Invoice?          @relation(fields: [invoiceId], references: [id])
-  receiver  User              @relation(fields: [receivedBy], references: [id])
-
-  @@map("payments")
-}
-
-// ============================================
-// INVOICE SYSTEM
-// ============================================
-
 enum InvoiceStatus {
   DRAFT
   ISSUED
@@ -347,153 +432,8 @@ enum InvoiceStatus {
   CANCELLED
 }
 
-model Invoice {
-  id             String        @id @default(cuid())
-  invoiceNumber  String        @unique
-  bookingId      String
-  roomCharges    Float         @default(0)
-  foodCharges    Float         @default(0)
-  extraCharges   Float         @default(0)
-  subtotal       Float         @default(0)
-  discount       Float         @default(0)
-  vatAmount      Float         @default(0)
-  totalAmount    Float         @default(0)
-  paidAmount     Float         @default(0)
-  dueAmount      Float         @default(0)
-  status         InvoiceStatus @default(DRAFT)
-  issuedAt       DateTime?
-  paidAt         DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  booking   Booking     @relation(fields: [bookingId], references: [id])
-  items     InvoiceItem[]
-  payments  Payment[]
-
-  @@map("invoices")
-}
-
-model InvoiceItem {
-  id          String   @id @default(cuid())
-  invoiceId   String
-  itemType    String   // room_charge, food_order, extra_service
-  referenceId String?  // ID of the charge or order
-  description String
-  quantity    Int      @default(1)
-  unitPrice   Float
-  total       Float
-
-  invoice Invoice @relation(fields: [invoiceId], references: [id])
-
-  @@map("invoice_items")
-}
-
-// ============================================
-// HOUSEKEEPING
-// ============================================
-
 enum HousekeepingStatus {
   PENDING
   IN_PROGRESS
   COMPLETED
-}
-
-model HousekeepingTask {
-  id          String             @id @default(cuid())
-  roomId      String
-  taskType    String             // cleaning, maintenance, deep_clean
-  status      HousekeepingStatus @default(PENDING)
-  assignedTo  String
-  notes       String?
-  startedAt   DateTime?
-  completedAt DateTime?
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-
-  room      Room @relation(fields: [roomId], references: [id])
-  assigned  User @relation(fields: [assignedTo], references: [id])
-
-  @@map("housekeeping_tasks")
-}
-
-// ============================================
-// INVENTORY / STOCK
-// ============================================
-
-model InventoryItem {
-  id          String   @id @default(cuid())
-  name        String
-  category    String?
-  unit        String   // kg, piece, liter
-  quantity    Float    @default(0)
-  minQuantity Float    @default(0) // reorder level
-  costPerUnit Float?
-  supplier    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  transactions InventoryTransaction[]
-
-  @@map("inventory_items")
-}
-
-model InventoryTransaction {
-  id         String   @id @default(cuid())
-  itemId     String
-  type       String   // in, out, waste
-  quantity   Float
-  notes      String?
-  createdBy  String
-  createdAt  DateTime @default(now())
-
-  item InventoryItem @relation(fields: [itemId], references: [id])
-
-  @@map("inventory_transactions")
-}
-
-// ============================================
-// NOTIFICATIONS
-// ============================================
-
-model Notification {
-  id        String   @id @default(cuid())
-  userId    String?
-  title     String
-  message   String
-  type      String   // order_ready, checkout_alert, low_stock, etc.
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
-
-  @@map("notifications")
-}
-
-// ============================================
-// ACTIVITY LOGS
-// ============================================
-
-model ActivityLog {
-  id        String   @id @default(cuid())
-  userId    String?
-  action    String
-  module    String   // hotel, restaurant, billing, etc.
-  details   String?  // JSON string
-  ipAddress String?
-  createdAt DateTime @default(now())
-
-  user User? @relation(fields: [userId], references: [id])
-
-  @@map("activity_logs")
-}
-
-// ============================================
-// SYSTEM SETTINGS
-// ============================================
-
-model Setting {
-  id    String @id @default(cuid())
-  key   String @unique
-  value String
-  group String? // hotel, restaurant, general
-
-  @@map("settings")
 }

@@ -108,7 +108,7 @@ export default function KitchenPage() {
       api.get<{ success: boolean; data: RestaurantOrder[] }>(
         '/restaurant-orders?status=PENDING&limit=50'
       ),
-    refetchInterval: 30000,
+    refetchInterval: 2000,
   })
 
   const { data: cookingData, isLoading: cookingLoading } = useQuery({
@@ -117,7 +117,7 @@ export default function KitchenPage() {
       api.get<{ success: boolean; data: RestaurantOrder[] }>(
         '/restaurant-orders?status=COOKING&limit=50'
       ),
-    refetchInterval: 30000,
+    refetchInterval: 2000,
   })
 
   const { data: readyData, isLoading: readyLoading } = useQuery({
@@ -126,7 +126,7 @@ export default function KitchenPage() {
       api.get<{ success: boolean; data: RestaurantOrder[] }>(
         '/restaurant-orders?status=READY&limit=50'
       ),
-    refetchInterval: 30000,
+    refetchInterval: 2000,
   })
 
   const pendingOrders = pendingData?.data || []
@@ -277,7 +277,7 @@ export default function KitchenPage() {
             Refresh
           </Button>
           <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>Auto-refresh: 30s</span>
+            <span>Auto-refresh: 2s</span>
           </div>
         </div>
       </div>

@@ -30,7 +30,7 @@ export async function GET() {
 // POST /api/menu-categories - Create category (ADMIN and RESTAURANT_STAFF only)
 export async function POST(request: NextRequest) {
   try {
-    const authResult = requireRole(request, 'ADMIN', 'RESTAURANT_STAFF');
+    const authResult = requireRole(request, 'ADMIN');
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
 // PUT /api/menu-categories - Update category (ADMIN and RESTAURANT_STAFF only)
 export async function PUT(request: NextRequest) {
   try {
-    const authResult = requireRole(request, 'ADMIN', 'RESTAURANT_STAFF');
+    const authResult = requireRole(request, 'ADMIN');
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();

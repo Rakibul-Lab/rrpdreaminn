@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
-    const { name, email, password, role, phone } = body;
+    const { name, email, password, role, phone, avatar } = body;
 
     if (!name || !email || !password || !role) {
       return errorResponse('Name, email, password, and role are required');
@@ -89,6 +89,7 @@ export async function POST(request: NextRequest) {
         password: hashedPassword,
         role,
         phone: phone || null,
+        avatar: avatar || null,
       },
       select: {
         id: true,
@@ -96,6 +97,7 @@ export async function POST(request: NextRequest) {
         name: true,
         role: true,
         phone: true,
+        avatar: true,
         active: true,
         createdAt: true,
       },
@@ -122,7 +124,7 @@ export async function PUT(request: NextRequest) {
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
-    const { id, name, email, role, phone, active } = body;
+    const { id, name, email, role, phone, active, avatar } = body;
 
     if (!id) {
       return errorResponse('User ID is required');
@@ -138,6 +140,7 @@ export async function PUT(request: NextRequest) {
     if (email !== undefined) updateData.email = email;
     if (role !== undefined) updateData.role = role;
     if (phone !== undefined) updateData.phone = phone;
+    if (avatar !== undefined) updateData.avatar = avatar;
     if (active !== undefined) updateData.active = active;
 
     // Handle password update separately (needs hashing)
@@ -155,6 +158,7 @@ export async function PUT(request: NextRequest) {
         name: true,
         role: true,
         phone: true,
+        avatar: true,
         active: true,
         createdAt: true,
       },

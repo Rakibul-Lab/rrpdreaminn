@@ -112,10 +112,6 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    if (existingInvoice) {
-      return errorResponse('An active invoice already exists for this booking');
-    }
-
     // Auto-fetch all room charges for the booking
     // Include both individual RoomCharge entries and the booking's totalRoomCharge
     const individualRoomCharges = booking.charges
@@ -131,7 +127,10 @@ export async function POST(request: NextRequest) {
 
     // Auto-fetch all restaurant orders linked to the booking
     const restaurantOrders = await db.restaurantOrder.findMany({
-      where: { bookingId },
+      where: {
+        bookingId,
+        status: { not: 'CANCELLED' },
+      },
       include: {
         items: {
           include: {
@@ -141,11 +140,16 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Calculate food charges from linked restaurant orders
-    const foodCharges = restaurantOrders.reduce((sum, order) => sum + order.totalAmount, 0);
+    // Restaurant financials (from order source of truth)
+    const restaurantNet = restaurantOrders.reduce(
+      (sum, order) => sum + Math.max(0, order.subtotal - order.discount),
+      0
+    );
+    const restaurantVat = restaurantOrders.reduce((sum, order) => sum + order.vatAmount, 0);
+    const restaurantTotal = restaurantOrders.reduce((sum, order) => sum + order.totalAmount, 0);
 
-    // Calculate totals
-    const subtotal = roomCharges + foodCharges + extraCharges;
+    // Hotel taxable base
+    const hotelBase = roomCharges + extraCharges;
 
     // Get VAT rate from settings (default 15%)
     let vatPercent = 15;
@@ -154,15 +158,18 @@ export async function POST(request: NextRequest) {
       vatPercent = parseFloat(vatSetting.value) || 15;
     }
 
-    // Get discount from settings or booking
+    // Hotel discount from settings (applied only to hotel part)
     let discount = 0;
     const discountSetting = await db.setting.findUnique({ where: { key: 'default_discount_percent' } });
     if (discountSetting) {
-      discount = subtotal * (parseFloat(discountSetting.value) || 0) / 100;
+      discount = hotelBase * (parseFloat(discountSetting.value) || 0) / 100;
     }
 
-    const vatAmount = (subtotal - discount) * vatPercent / 100;
-    const totalAmount = subtotal - discount + vatAmount;
+    const hotelVat = (hotelBase - discount) * vatPercent / 100;
+    const vatAmount = hotelVat + restaurantVat;
+    const foodCharges = restaurantNet;
+    const subtotal = hotelBase + restaurantNet;
+    const totalAmount = (hotelBase - discount + hotelVat) + restaurantTotal;
 
     // Calculate paid amount from all payments linked to this booking
     const paidAmount = booking.payments.reduce((sum, p) => sum + p.amount, 0);
@@ -176,24 +183,46 @@ export async function POST(request: NextRequest) {
 
     // Create invoice with items in a transaction
     const invoice = await db.$transaction(async (tx) => {
-      // Create the invoice
-      const inv = await tx.invoice.create({
-        data: {
-          invoiceNumber,
-          bookingId,
-          roomCharges,
-          foodCharges,
-          extraCharges,
-          subtotal,
-          discount,
-          vatAmount,
-          totalAmount,
-          paidAmount,
-          dueAmount: Math.max(0, dueAmount),
-          status,
-          issuedAt: new Date(),
-          paidAt: status === 'PAID' ? new Date() : null,
-        },
+      const inv = existingInvoice
+        ? await tx.invoice.update({
+            where: { id: existingInvoice.id },
+            data: {
+              roomCharges,
+              foodCharges,
+              extraCharges,
+              subtotal,
+              discount,
+              vatAmount,
+              totalAmount,
+              paidAmount,
+              dueAmount: Math.max(0, dueAmount),
+              status,
+              issuedAt: existingInvoice.issuedAt || new Date(),
+              paidAt: status === 'PAID' ? new Date() : null,
+            },
+          })
+        : await tx.invoice.create({
+            data: {
+              invoiceNumber,
+              bookingId,
+              roomCharges,
+              foodCharges,
+              extraCharges,
+              subtotal,
+              discount,
+              vatAmount,
+              totalAmount,
+              paidAmount,
+              dueAmount: Math.max(0, dueAmount),
+              status,
+              issuedAt: new Date(),
+              paidAt: status === 'PAID' ? new Date() : null,
+            },
+          });
+
+      // Rebuild line items so repeated generation always syncs with latest room-service orders/charges.
+      await tx.invoiceItem.deleteMany({
+        where: { invoiceId: inv.id },
       });
 
       // Create invoice items for room charges
@@ -295,7 +324,11 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    return successResponse(completeInvoice, 'Invoice generated successfully', 201);
+    return successResponse(
+      completeInvoice,
+      existingInvoice ? 'Invoice updated successfully' : 'Invoice generated successfully',
+      existingInvoice ? 200 : 201
+    );
   } catch (error) {
     console.error('Error generating invoice:', error);
     return errorResponse('Failed to generate invoice', 500);

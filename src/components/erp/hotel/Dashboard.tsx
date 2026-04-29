@@ -100,7 +100,13 @@ interface DashboardData {
   recentActivities?: any[];
 }
 
-export function Dashboard() {
+type DashboardPageKey = 'bookings';
+
+interface DashboardProps {
+  onNavigate?: (page: DashboardPageKey) => void;
+}
+
+export function Dashboard({ onNavigate }: DashboardProps = {}) {
   const user = useAuthStore((s) => s.user);
 
   const { data, isLoading } = useQuery({
@@ -109,7 +115,7 @@ export function Dashboard() {
       const res = await api.get<{ success: boolean; data: DashboardData }>('/dashboard');
       return res.data;
     },
-    refetchInterval: 30000,
+    refetchInterval: 2000,
   });
 
   if (isLoading) {
@@ -121,7 +127,7 @@ export function Dashboard() {
 
   // For ADMIN and HOTEL_STAFF
   if (dashboard.role === 'ADMIN' || dashboard.role === 'HOTEL_STAFF') {
-    return <HotelAdminDashboard data={dashboard} />;
+    return <HotelAdminDashboard data={dashboard} onNavigate={onNavigate} />;
   }
 
   // For RESTAURANT_STAFF
@@ -132,7 +138,13 @@ export function Dashboard() {
   return <div className="text-center text-muted-foreground py-10">Dashboard</div>;
 }
 
-function HotelAdminDashboard({ data }: { data: DashboardData }) {
+function HotelAdminDashboard({
+  data,
+  onNavigate,
+}: {
+  data: DashboardData;
+  onNavigate?: (page: DashboardPageKey) => void;
+}) {
   const rooms = data.rooms;
   const checkIns = data.checkIns || data.arrivals;
   const checkOuts = data.checkOuts || data.departures;
@@ -155,15 +167,26 @@ function HotelAdminDashboard({ data }: { data: DashboardData }) {
     <div className="space-y-6">
       {/* Quick Actions */}
       <div className="flex flex-wrap gap-3">
-        <Button className="bg-amber-600 hover:bg-amber-700 text-white">
+        <Button
+          className="bg-amber-600 hover:bg-amber-700 text-white"
+          onClick={() => onNavigate?.('bookings')}
+        >
           <CalendarCheck2 className="w-4 h-4 mr-2" />
           New Booking
         </Button>
-        <Button variant="outline" className="border-emerald-600 text-emerald-700 hover:bg-emerald-50">
+        <Button
+          variant="outline"
+          className="border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+          onClick={() => onNavigate?.('bookings')}
+        >
           <LogIn className="w-4 h-4 mr-2" />
           Check-in
         </Button>
-        <Button variant="outline" className="border-slate-400 text-slate-600 hover:bg-slate-50">
+        <Button
+          variant="outline"
+          className="border-slate-400 text-slate-600 hover:bg-slate-50"
+          onClick={() => onNavigate?.('bookings')}
+        >
           <LogOut className="w-4 h-4 mr-2" />
           Check-out
         </Button>

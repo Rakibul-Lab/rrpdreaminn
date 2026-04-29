@@ -48,7 +48,7 @@ export function Header({ activeView, onToggleSidebar }: HeaderProps) {
   const { data: notifData } = useQuery({
     queryKey: ['notifications-count'],
     queryFn: () => api.get<{ success: boolean; meta?: { total: number } }>('/notifications?limit=1'),
-    refetchInterval: 30000,
+    refetchInterval: 2000,
   });
 
   const unreadCount = notifData?.meta?.total || 0;

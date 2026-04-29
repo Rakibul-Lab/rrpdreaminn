@@ -1,8 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import Image from 'next/image'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
+import { useAuthStore } from '@/lib/auth-store'
 import { toast } from 'sonner'
 import {
   Plus,
@@ -16,6 +18,8 @@ import {
   ToggleRight,
   Package,
   X,
+  ImageIcon,
+  Sparkles,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +40,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -94,6 +99,7 @@ interface ItemFormData {
   name: string
   description: string
   price: number
+  image: string | null
   isVeg: boolean
   available: boolean
   preparationTime: number | null
@@ -104,6 +110,7 @@ const defaultItemForm: ItemFormData = {
   name: '',
   description: '',
   price: 0,
+  image: null,
   isVeg: true,
   available: true,
   preparationTime: null,
@@ -118,9 +125,45 @@ const defaultCategoryForm: CategoryFormData = {
 
 export default function MenuPage() {
   const queryClient = useQueryClient()
+  const user = useAuthStore((s) => s.user)
+  const isAdmin = user?.role === 'ADMIN'
   const [searchQuery, setSearchQuery] = useState('')
   const [filterCategory, setFilterCategory] = useState<string>('all')
   const [sortBy, setSortBy] = useState<string>('name')
+
+  const getItemImageSrc = (item: Pick<MenuItem, 'id' | 'name' | 'image'>) => {
+    if (item.image && item.image.trim()) return item.image
+    const params = new URLSearchParams({
+      seed: item.id,
+      name: item.name,
+      w: '220',
+      h: '140',
+    })
+    return `/api/placeholder/food?${params.toString()}`
+  }
+
+  const handleChooseImage = async (file: File | null) => {
+    if (!file) return
+
+    const maxBytes = 2 * 1024 * 1024
+    if (file.size > maxBytes) {
+      toast.error('Image too large', { description: 'Please choose an image under 2MB.' })
+      return
+    }
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('Invalid file', { description: 'Please choose an image file.' })
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result || '')
+      setItemForm((s) => ({ ...s, image: result || null }))
+    }
+    reader.onerror = () => toast.error('Failed to read image file')
+    reader.readAsDataURL(file)
+  }
 
   // Category dialog state
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
@@ -132,6 +175,8 @@ export default function MenuPage() {
   const [itemDialogOpen, setItemDialogOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null)
   const [itemForm, setItemForm] = useState<ItemFormData>(defaultItemForm)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const [imageInputKey, setImageInputKey] = useState(0)
 
   // Fetch categories
   const { data: categoriesData, isLoading: categoriesLoading } = useQuery({
@@ -172,11 +217,15 @@ export default function MenuPage() {
   // Category mutations
   const createCategoryMutation = useMutation({
     mutationFn: (data: CategoryFormData) => api.post('/menu-categories', data),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
       toast.success('Category created')
       queryClient.invalidateQueries({ queryKey: ['menu-categories'] })
       setCategoryDialogOpen(false)
       setCategoryForm(defaultCategoryForm)
+      const createdId = res?.data?.id as string | undefined
+      if (createdId && itemDialogOpen) {
+        setItemForm((s) => ({ ...s, categoryId: createdId }))
+      }
     },
     onError: (error: Error) => toast.error('Failed to create category', { description: error.message }),
   })
@@ -195,7 +244,11 @@ export default function MenuPage() {
 
   // Item mutations
   const createItemMutation = useMutation({
-    mutationFn: (data: ItemFormData) => api.post('/menu-items', data),
+    mutationFn: (data: ItemFormData) =>
+      api.post('/menu-items', {
+        ...data,
+        image: data.image && data.image.trim() ? data.image : null,
+      }),
     onSuccess: () => {
       toast.success('Menu item created')
       queryClient.invalidateQueries({ queryKey: ['menu-items-admin'] })
@@ -206,7 +259,11 @@ export default function MenuPage() {
   })
 
   const updateItemMutation = useMutation({
-    mutationFn: (data: ItemFormData & { id: string }) => api.put(`/menu-items/${data.id}`, data),
+    mutationFn: (data: ItemFormData & { id: string }) =>
+      api.put(`/menu-items/${data.id}`, {
+        ...data,
+        image: data.image && data.image.trim() ? data.image : null,
+      }),
     onSuccess: () => {
       toast.success('Menu item updated')
       queryClient.invalidateQueries({ queryKey: ['menu-items-admin'] })
@@ -237,6 +294,10 @@ export default function MenuPage() {
 
   // Handlers
   const handleEditCategory = (cat: MenuCategory) => {
+    if (!isAdmin) {
+      toast.error('Only superadmin can edit categories')
+      return
+    }
     setEditingCategory(cat)
     setCategoryForm({
       name: cat.name,
@@ -248,6 +309,10 @@ export default function MenuPage() {
   }
 
   const handleSaveCategory = () => {
+    if (!isAdmin) {
+      toast.error('Only superadmin can manage categories')
+      return
+    }
     if (!categoryForm.name.trim()) {
       toast.error('Category name is required')
       return
@@ -260,20 +325,30 @@ export default function MenuPage() {
   }
 
   const handleEditItem = (item: MenuItem) => {
+    if (!isAdmin) {
+      toast.error('Only superadmin can edit menu items')
+      return
+    }
     setEditingItem(item)
     setItemForm({
       categoryId: item.categoryId,
       name: item.name,
       description: item.description || '',
       price: item.price,
+      image: item.image || null,
       isVeg: item.isVeg,
       available: item.available,
       preparationTime: item.preparationTime,
     })
+    setImageInputKey((k) => k + 1)
     setItemDialogOpen(true)
   }
 
   const handleSaveItem = () => {
+    if (!isAdmin) {
+      toast.error('Only superadmin can add new items')
+      return
+    }
     if (!itemForm.name.trim()) {
       toast.error('Item name is required')
       return
@@ -308,29 +383,38 @@ export default function MenuPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              onClick={() => {
-                setEditingCategory(null)
-                setCategoryForm(defaultCategoryForm)
-                setCategoryDialogOpen(true)
-              }}
-              variant="outline"
-              className="border-slate-600 text-slate-300 hover:bg-slate-800"
-            >
-              <Plus className="w-4 h-4 mr-1" />
-              Category
-            </Button>
-            <Button
-              onClick={() => {
-                setEditingItem(null)
-                setItemForm(defaultItemForm)
-                setItemDialogOpen(true)
-              }}
-              className="bg-amber-600 hover:bg-amber-700"
-            >
-              <Plus className="w-4 h-4 mr-1" />
-              Menu Item
-            </Button>
+            {isAdmin ? (
+              <>
+                <Button
+                  onClick={() => {
+                    setEditingCategory(null)
+                    setCategoryForm(defaultCategoryForm)
+                    setCategoryDialogOpen(true)
+                  }}
+                  variant="outline"
+                  className="border-white bg-white text-black hover:bg-slate-100 hover:text-black"
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Category
+                </Button>
+                <Button
+                  onClick={() => {
+                    setEditingItem(null)
+                    setItemForm(defaultItemForm)
+                    setImageInputKey((k) => k + 1)
+                    setItemDialogOpen(true)
+                  }}
+                  className="bg-amber-600 hover:bg-amber-700"
+                >
+                  <Plus className="w-4 h-4 mr-1" />
+                  Menu Item
+                </Button>
+              </>
+            ) : (
+              <Badge variant="outline" className="border-slate-600 text-slate-300">
+                Read-only (Superadmin only)
+              </Badge>
+            )}
           </div>
         </div>
       </div>
@@ -381,8 +465,8 @@ export default function MenuPage() {
                         </div>
                         <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                           <button
-                            className="p-1 text-slate-400 hover:text-amber-600"
-                            onClick={() => handleEditCategory(cat)}
+                            className={`p-1 ${isAdmin ? 'text-slate-400 hover:text-amber-600' : 'text-slate-200/40 cursor-not-allowed'}`}
+                            onClick={() => isAdmin && handleEditCategory(cat)}
                           >
                             <Pencil className="w-3 h-3" />
                           </button>
@@ -436,6 +520,7 @@ export default function MenuPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead className="w-[64px]">Image</TableHead>
                         <TableHead className="w-8"></TableHead>
                         <TableHead>Name</TableHead>
                         <TableHead>Category</TableHead>
@@ -448,13 +533,25 @@ export default function MenuPage() {
                     <TableBody>
                       {filteredItems.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={7} className="text-center py-8 text-slate-400">
+                          <TableCell colSpan={8} className="text-center py-8 text-slate-400">
                             No menu items found
                           </TableCell>
                         </TableRow>
                       ) : (
                         filteredItems.map((item) => (
                           <TableRow key={item.id}>
+                            <TableCell>
+                              <div className="h-10 w-14 overflow-hidden rounded-md border bg-slate-50">
+                                <Image
+                                  src={getItemImageSrc(item)}
+                                  alt={item.name}
+                                  width={220}
+                                  height={140}
+                                  className="h-10 w-14 object-cover"
+                                  unoptimized
+                                />
+                              </div>
+                            </TableCell>
                             <TableCell>
                               <span
                                 className={`w-3 h-3 rounded-full block ${
@@ -494,12 +591,14 @@ export default function MenuPage() {
                             <TableCell>
                               <Switch
                                 checked={item.available}
-                                onCheckedChange={(checked) =>
+                                disabled={!isAdmin}
+                                onCheckedChange={(checked) => {
+                                  if (!isAdmin) return
                                   toggleAvailabilityMutation.mutate({
                                     id: item.id,
                                     available: checked,
                                   })
-                                }
+                                }}
                               />
                             </TableCell>
                             <TableCell className="text-right">
@@ -508,7 +607,8 @@ export default function MenuPage() {
                                   variant="ghost"
                                   size="icon"
                                   className="h-7 w-7"
-                                  onClick={() => handleEditItem(item)}
+                                  disabled={!isAdmin}
+                                  onClick={() => isAdmin && handleEditItem(item)}
                                 >
                                   <Pencil className="w-3.5 h-3.5" />
                                 </Button>
@@ -516,7 +616,8 @@ export default function MenuPage() {
                                   variant="ghost"
                                   size="icon"
                                   className="h-7 w-7 text-red-400 hover:text-red-600"
-                                  onClick={() => deleteItemMutation.mutate(item.id)}
+                                  disabled={!isAdmin}
+                                  onClick={() => isAdmin && deleteItemMutation.mutate(item.id)}
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </Button>
@@ -536,60 +637,81 @@ export default function MenuPage() {
 
       {/* Category Dialog */}
       <Dialog open={categoryDialogOpen} onOpenChange={setCategoryDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-[calc(100%-1rem)] sm:max-w-xl p-0 max-h-[92vh] overflow-hidden flex flex-col">
           <DialogHeader>
-            <DialogTitle>
-              {editingCategory ? 'Edit Category' : 'Add Category'}
-            </DialogTitle>
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-4 py-4 text-white sm:px-6 sm:py-5">
+              <DialogTitle className="flex items-center gap-2 text-xl">
+                <Sparkles className="h-5 w-5 text-amber-400" />
+                {editingCategory ? 'Edit Category' : 'Add Category'}
+              </DialogTitle>
+              <p className="mt-1 text-sm text-slate-200">
+                Organize items with clean names, descriptions and ordering.
+              </p>
+              <DialogDescription className="sr-only">
+                {editingCategory
+                  ? 'Edit an existing category details including name, description, status, and sort order.'
+                  : 'Create a new category with name, description, status, and sort order.'}
+              </DialogDescription>
+            </div>
           </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <Label className="text-xs">Name *</Label>
-              <Input
-                value={categoryForm.name}
-                onChange={(e) =>
-                  setCategoryForm({ ...categoryForm, name: e.target.value })
-                }
-                placeholder="Category name"
-                className="h-9"
-              />
+          <div className="space-y-5 px-4 pb-4 sm:px-6 sm:pb-6 overflow-y-auto">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <Label className="text-xs">Name *</Label>
+                <Input
+                  value={categoryForm.name}
+                  onChange={(e) =>
+                    setCategoryForm({ ...categoryForm, name: e.target.value })
+                  }
+                  placeholder="Category name"
+                  className="mt-1 h-10"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Label className="text-xs">Description</Label>
+                <Textarea
+                  value={categoryForm.description}
+                  onChange={(e) =>
+                    setCategoryForm({ ...categoryForm, description: e.target.value })
+                  }
+                  placeholder="Optional description"
+                  className="mt-1 h-24 resize-none"
+                />
+              </div>
+              <div className="rounded-lg border p-3">
+                <div className="mb-2 text-xs font-medium text-slate-600">Status</div>
+                <div className="flex items-center gap-3">
+                  <Switch
+                    checked={categoryForm.active}
+                    onCheckedChange={(checked) =>
+                      setCategoryForm({ ...categoryForm, active: checked })
+                    }
+                  />
+                  <Label className="text-xs">{categoryForm.active ? 'Active' : 'Inactive'}</Label>
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs">Sort Order</Label>
+                <Input
+                  type="number"
+                  value={categoryForm.sortOrder}
+                  onChange={(e) =>
+                    setCategoryForm({
+                      ...categoryForm,
+                      sortOrder: Number(e.target.value),
+                    })
+                  }
+                  className="mt-1 h-10"
+                />
+              </div>
             </div>
-            <div>
-              <Label className="text-xs">Description</Label>
-              <Textarea
-                value={categoryForm.description}
-                onChange={(e) =>
-                  setCategoryForm({ ...categoryForm, description: e.target.value })
-                }
-                placeholder="Optional description"
-                className="h-16 resize-none"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <Switch
-                checked={categoryForm.active}
-                onCheckedChange={(checked) =>
-                  setCategoryForm({ ...categoryForm, active: checked })
-                }
-              />
-              <Label className="text-xs">Active</Label>
-            </div>
-            <div>
-              <Label className="text-xs">Sort Order</Label>
-              <Input
-                type="number"
-                value={categoryForm.sortOrder}
-                onChange={(e) =>
-                  setCategoryForm({
-                    ...categoryForm,
-                    sortOrder: Number(e.target.value),
-                  })
-                }
-                className="h-9"
-              />
-            </div>
+            {!categoryForm.name.trim() ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Category name is required.
+              </div>
+            ) : null}
           </div>
-          <DialogFooter>
+          <DialogFooter className="border-t bg-white px-4 py-3 sm:px-6">
             <Button
               variant="outline"
               onClick={() => setCategoryDialogOpen(false)}
@@ -609,105 +731,192 @@ export default function MenuPage() {
 
       {/* Menu Item Dialog */}
       <Dialog open={itemDialogOpen} onOpenChange={setItemDialogOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-[calc(100%-1rem)] sm:max-w-2xl p-0 max-h-[92vh] overflow-hidden flex flex-col">
           <DialogHeader>
-            <DialogTitle>
-              {editingItem ? 'Edit Menu Item' : 'Add Menu Item'}
-            </DialogTitle>
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-4 py-4 text-white sm:px-6 sm:py-5">
+              <DialogTitle className="flex items-center gap-2 text-xl">
+                <Sparkles className="h-5 w-5 text-amber-400" />
+                {editingItem ? 'Edit Menu Item' : 'Add Menu Item'}
+              </DialogTitle>
+              <p className="mt-1 text-sm text-slate-200">
+                Use a clean image, category and pricing to keep your menu professional.
+              </p>
+              <DialogDescription className="sr-only">
+                {editingItem
+                  ? 'Edit a menu item including image, category, pricing, description, and availability settings.'
+                  : 'Create a menu item with image, category, pricing, description, and availability settings.'}
+              </DialogDescription>
+            </div>
           </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <Label className="text-xs">Name *</Label>
-              <Input
-                value={itemForm.name}
-                onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
-                placeholder="Item name"
-                className="h-9"
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Category *</Label>
-              <Select
-                value={itemForm.categoryId}
-                onValueChange={(val) => setItemForm({ ...itemForm, categoryId: val })}
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Select category" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((cat) => (
-                    <SelectItem key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-xs">Price *</Label>
-              <Input
-                type="number"
-                min={0}
-                value={itemForm.price || ''}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, price: Number(e.target.value) || 0 })
-                }
-                placeholder="0"
-                className="h-9"
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Description</Label>
-              <Textarea
-                value={itemForm.description}
-                onChange={(e) =>
-                  setItemForm({ ...itemForm, description: e.target.value })
-                }
-                placeholder="Optional description"
-                className="h-16 resize-none"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={itemForm.isVeg}
-                  onCheckedChange={(checked) =>
-                    setItemForm({ ...itemForm, isVeg: checked })
-                  }
-                />
-                <Label className="text-xs flex items-center gap-1">
-                  <span className={`w-2 h-2 rounded-full ${itemForm.isVeg ? 'bg-green-500' : 'bg-red-500'}`} />
-                  {itemForm.isVeg ? 'Veg' : 'Non-Veg'}
-                </Label>
+          <div className="space-y-5 px-4 pb-4 sm:space-y-6 sm:px-6 sm:pb-6 overflow-y-auto">
+            <div className="rounded-xl border bg-slate-50 p-4">
+              <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <ImageIcon className="h-4 w-4 text-amber-600" />
+                Item Image
               </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={itemForm.available}
-                  onCheckedChange={(checked) =>
-                    setItemForm({ ...itemForm, available: checked })
-                  }
-                />
-                <Label className="text-xs">Available</Label>
+              <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+                <div className="h-20 w-28 overflow-hidden rounded-lg border bg-white shadow-sm">
+                  {itemForm.image?.trim() ? (
+                    <Image
+                      src={itemForm.image}
+                      alt="Preview"
+                      width={220}
+                      height={140}
+                      className="h-20 w-28 object-cover"
+                      unoptimized
+                    />
+                  ) : (
+                    <div className="flex h-20 w-28 items-center justify-center bg-slate-50 text-slate-400">
+                      <div className="text-center">
+                        <ImageIcon className="mx-auto h-5 w-5" />
+                        <p className="mt-1 text-[10px]">No image</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <Label className="text-xs">Choose Image (max 2MB)</Label>
+                  <Input
+                    key={imageInputKey}
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="mt-1 h-10"
+                    onChange={(e) => handleChooseImage(e.target.files?.[0] || null)}
+                  />
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setItemForm((s) => ({ ...s, image: null }))
+                        if (imageInputRef.current) imageInputRef.current.value = ''
+                        setImageInputKey((k) => k + 1)
+                      }}
+                    >
+                      Remove Image
+                    </Button>
+                    <p className="text-[11px] text-slate-500">
+                      If removed, dummy image will be used in POS.
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
-            <div>
-              <Label className="text-xs">Preparation Time (minutes)</Label>
-              <Input
-                type="number"
-                min={0}
-                value={itemForm.preparationTime ?? ''}
-                onChange={(e) =>
-                  setItemForm({
-                    ...itemForm,
-                    preparationTime: e.target.value ? Number(e.target.value) : null,
-                  })
-                }
-                placeholder="Optional"
-                className="h-9"
-              />
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="md:col-span-2">
+                <Label className="text-xs">Name *</Label>
+                <Input
+                  value={itemForm.name}
+                  onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
+                  placeholder="Item name"
+                  className="mt-1 h-10"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Category *</Label>
+                  {isAdmin && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-black"
+                      onClick={() => {
+                        setEditingCategory(null)
+                        setCategoryForm(defaultCategoryForm)
+                        setCategoryDialogOpen(true)
+                      }}
+                    >
+                      <Plus className="mr-1 h-3 w-3" />
+                      Add Category
+                    </Button>
+                  )}
+                </div>
+                <Select
+                  value={itemForm.categoryId}
+                  onValueChange={(val) => setItemForm({ ...itemForm, categoryId: val })}
+                >
+                  <SelectTrigger className="mt-1 h-10">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Price *</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={itemForm.price || ''}
+                  onChange={(e) =>
+                    setItemForm({ ...itemForm, price: Number(e.target.value) || 0 })
+                  }
+                  placeholder="0"
+                  className="mt-1 h-10"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Label className="text-xs">Description</Label>
+                <Textarea
+                  value={itemForm.description}
+                  onChange={(e) =>
+                    setItemForm({ ...itemForm, description: e.target.value })
+                  }
+                  placeholder="Optional description"
+                  className="mt-1 h-20 resize-none"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Preparation Time (minutes)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={itemForm.preparationTime ?? ''}
+                  onChange={(e) =>
+                    setItemForm({
+                      ...itemForm,
+                      preparationTime: e.target.value ? Number(e.target.value) : null,
+                    })
+                  }
+                  placeholder="Optional"
+                  className="mt-1 h-10"
+                />
+              </div>
+              <div className="flex items-end gap-4 rounded-lg border p-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={itemForm.isVeg}
+                    onCheckedChange={(checked) =>
+                      setItemForm({ ...itemForm, isVeg: checked })
+                    }
+                  />
+                  <Label className="text-xs flex items-center gap-1">
+                    <span className={`w-2 h-2 rounded-full ${itemForm.isVeg ? 'bg-green-500' : 'bg-red-500'}`} />
+                    {itemForm.isVeg ? 'Veg' : 'Non-Veg'}
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={itemForm.available}
+                    onCheckedChange={(checked) =>
+                      setItemForm({ ...itemForm, available: checked })
+                    }
+                  />
+                  <Label className="text-xs">Available</Label>
+                </div>
+              </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="border-t bg-white px-4 py-3 sm:px-6">
             <Button variant="outline" onClick={() => setItemDialogOpen(false)}>
               Cancel
             </Button>

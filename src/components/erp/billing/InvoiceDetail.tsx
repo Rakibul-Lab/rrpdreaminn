@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { useToast } from '@/hooks/use-toast'
 import { format } from 'date-fns'
+import Image from 'next/image'
 import {
   Printer, CreditCard, Building2, User, Phone, MapPin, Receipt
 } from 'lucide-react'
@@ -63,6 +64,7 @@ interface InvoiceData {
   totalAmount: number
   paidAmount: number
   dueAmount: number
+  declaredVatPercent?: number
   status: string
   issuedAt: string | null
   paidAt: string | null
@@ -75,6 +77,16 @@ interface InvoiceData {
     customer: { id: string; name: string; phone: string; email: string | null; address: string | null }
     room: { id: string; roomNumber: string; type: { name: string; basePrice: number } }
     charges: Array<{ id: string; chargeType: string; description: string; amount: number; quantity: number }>
+    restaurantOrders?: Array<{
+      id: string
+      orderNumber: string
+      subtotal: number
+      discount: number
+      vatPercent: number
+      vatAmount: number
+      totalAmount: number
+      createdAt: string
+    }>
   }
   items: InvoiceItem[]
   payments: Payment[]
@@ -137,6 +149,21 @@ export default function InvoiceDetail({ invoiceId, onClose }: InvoiceDetailProps
   const roomItems = invoice?.items?.filter((i) => i.itemType === 'room_charge') || []
   const foodItems = invoice?.items?.filter((i) => i.itemType === 'food_order') || []
   const extraItems = invoice?.items?.filter((i) => i.itemType === 'extra_service') || []
+  const roomBill = invoice?.roomCharges || 0
+  const restaurantOrders = invoice?.booking?.restaurantOrders || []
+  const restaurantSubtotal = restaurantOrders.reduce((sum, o) => sum + o.subtotal, 0)
+  const restaurantDiscount = restaurantOrders.reduce((sum, o) => sum + o.discount, 0)
+  const restaurantBill = Math.max(0, restaurantSubtotal - restaurantDiscount)
+  const extraBill = invoice?.extraCharges || 0
+  const restaurantVat = restaurantOrders.reduce((sum, o) => sum + o.vatAmount, 0)
+  const roomVat = Math.max(0, (invoice?.vatAmount || 0) - restaurantVat)
+  const hotelVatPercent = invoice?.declaredVatPercent ?? 15
+  const vatRates = Array.from(new Set(restaurantOrders.map((o) => Number(o.vatPercent || 0))))
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b)
+  const restaurantVatLabel = vatRates.length ? vatRates.map((r) => `${r}%`).join(', ') : '-'
+  const hotelPartTotal = roomBill + roomVat + extraBill
+  const restaurantPartTotal = restaurantBill + restaurantVat
 
   if (isLoading) {
     return (
@@ -157,10 +184,17 @@ export default function InvoiceDetail({ invoiceId, onClose }: InvoiceDetailProps
       {/* Invoice Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start mb-6 gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Receipt className="h-6 w-6 text-amber-600" />
-            Invoice
-          </h2>
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 overflow-hidden rounded-lg border bg-white">
+              <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={40} height={40} className="h-full w-full object-cover" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                <Receipt className="h-6 w-6 text-amber-600" />
+                RRP Dream Inn Invoice
+              </h2>
+            </div>
+          </div>
           <p className="font-mono text-lg text-amber-700 mt-1">{invoice.invoiceNumber}</p>
           <p className="text-sm text-slate-500">
             Issued: {invoice.issuedAt ? format(new Date(invoice.issuedAt), 'MMM dd, yyyy HH:mm') : 'N/A'}
@@ -310,9 +344,55 @@ export default function InvoiceDetail({ invoiceId, onClose }: InvoiceDetailProps
       <Card className="mb-4 border-2 border-amber-200">
         <CardContent className="p-4">
           <div className="space-y-2">
+            <div className="rounded-md border border-slate-200 p-3 space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hotel Part</p>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Room Bill</span>
+                <span>৳{roomBill.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Room VAT</span>
+                <span>৳{roomVat.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>Hotel VAT Rate</span>
+                <span>{hotelVatPercent}%</span>
+              </div>
+              {extraBill > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-600">Extra Charges</span>
+                  <span>৳{extraBill.toLocaleString()}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-semibold border-t pt-1.5">
+                <span>Hotel Total</span>
+                <span>৳{hotelPartTotal.toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-slate-200 p-3 space-y-1.5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Restaurant Part</p>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">Subtotal</span>
+                <span>৳{restaurantSubtotal.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-sm text-emerald-700">
+                <span className="text-slate-600">Discount</span>
+                <span>-৳{restaurantDiscount.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">VAT ({restaurantVatLabel})</span>
+                <span>৳{restaurantVat.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-sm font-semibold border-t pt-1.5">
+                <span>Total</span>
+                <span>৳{restaurantPartTotal.toLocaleString()}</span>
+              </div>
+            </div>
+
             <div className="flex justify-between text-sm">
-              <span className="text-slate-600">Subtotal</span>
-              <span>৳{invoice.subtotal.toLocaleString()}</span>
+              <span className="text-slate-600">Combined Total</span>
+              <span>৳{(hotelPartTotal + restaurantPartTotal).toLocaleString()}</span>
             </div>
             {invoice.discount > 0 && (
               <div className="flex justify-between text-sm text-emerald-600">
@@ -320,13 +400,9 @@ export default function InvoiceDetail({ invoiceId, onClose }: InvoiceDetailProps
                 <span>-৳{invoice.discount.toLocaleString()}</span>
               </div>
             )}
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-600">VAT (15%)</span>
-              <span>৳{invoice.vatAmount.toLocaleString()}</span>
-            </div>
             <Separator />
             <div className="flex justify-between font-bold text-lg">
-              <span>Total</span>
+              <span>Subtotal</span>
               <span>৳{invoice.totalAmount.toLocaleString()}</span>
             </div>
             <div className="flex justify-between text-sm text-emerald-600">

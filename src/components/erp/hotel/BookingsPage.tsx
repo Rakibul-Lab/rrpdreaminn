@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,7 +20,8 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { Plus, Search, LogIn, LogOut, XCircle, Eye, DollarSign } from 'lucide-react';
+import { Plus, Search, LogIn, LogOut, XCircle, Eye, DollarSign, Receipt } from 'lucide-react';
+import Image from 'next/image';
 
 interface Booking {
   id: string;
@@ -55,6 +56,23 @@ interface Room {
   type: { name: string; basePrice: number };
 }
 
+interface CheckoutPreview {
+  bookingId: string;
+  customerName: string;
+  roomNumber: string;
+  roomCharges: number;
+  foodCharges: number;
+  extraCharges: number;
+  subtotal: number;
+  discount: number;
+  vatPercent: number;
+  vatAmount: number;
+  totalAmount: number;
+  totalPaid: number;
+  dueBeforeSettlement: number;
+  lateCheckoutCharge: number;
+}
+
 export function BookingsPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -84,6 +102,12 @@ export function BookingsPage() {
   const [checkInBookingId, setCheckInBookingId] = useState<string | null>(null);
   const [checkInPayment, setCheckInPayment] = useState('0');
   const [checkInPaymentMethod, setCheckInPaymentMethod] = useState('CASH');
+  const [checkOutDialogOpen, setCheckOutDialogOpen] = useState(false);
+  const [checkOutBookingId, setCheckOutBookingId] = useState<string | null>(null);
+  const [checkOutPayment, setCheckOutPayment] = useState('0');
+  const [checkOutPaymentMethod, setCheckOutPaymentMethod] = useState('CASH');
+  const [checkOutPaymentReference, setCheckOutPaymentReference] = useState('');
+  const [checkOutPaymentNotes, setCheckOutPaymentNotes] = useState('');
 
   const buildQuery = () => {
     const params: string[] = [`page=${page}`, 'limit=20'];
@@ -104,6 +128,15 @@ export function BookingsPage() {
   const { data: roomsData } = useQuery({
     queryKey: ['available-rooms'],
     queryFn: () => api.get<{ success: boolean; data: Room[] }>('/rooms?status=AVAILABLE&limit=100'),
+  });
+
+  const { data: checkoutPreviewData } = useQuery({
+    queryKey: ['checkout-preview', checkOutBookingId],
+    queryFn: () =>
+      api.get<{ success: boolean; data: CheckoutPreview }>(
+        `/bookings/check-out/${checkOutBookingId}`
+      ),
+    enabled: !!checkOutBookingId && checkOutDialogOpen,
   });
 
   const bookings = ((bookingsData as any)?.data || []) as Booking[];
@@ -132,7 +165,11 @@ export function BookingsPage() {
 
   const createBookingMutation = useMutation({
     mutationFn: (data: any) => api.post('/bookings', data),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to create booking');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['bookings'] });
       toast.success('Booking created successfully');
       closeCreateDialog();
@@ -143,7 +180,11 @@ export function BookingsPage() {
   const checkInMutation = useMutation({
     mutationFn: ({ id, initialPayment, paymentMethod }: { id: string; initialPayment: number; paymentMethod: string }) =>
       api.post(`/bookings/check-in/${id}`, { initialPayment, paymentMethod }),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to check in');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['bookings'] });
       toast.success('Guest checked in successfully');
       setCheckInDialogOpen(false);
@@ -155,10 +196,39 @@ export function BookingsPage() {
   });
 
   const checkOutMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/bookings/check-out/${id}`),
-    onSuccess: () => {
+    mutationFn: ({
+      id,
+      finalPayment,
+      paymentMethod,
+      paymentReference,
+      paymentNotes,
+    }: {
+      id: string;
+      finalPayment: number;
+      paymentMethod: string;
+      paymentReference?: string;
+      paymentNotes?: string;
+    }) =>
+      api.post(`/bookings/check-out/${id}`, {
+        finalPayment,
+        paymentMethod,
+        paymentReference,
+        paymentNotes,
+      }),
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to check out');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['bookings'] });
-      toast.success('Guest checked out successfully');
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      setCheckOutDialogOpen(false);
+      setCheckOutBookingId(null);
+      setCheckOutPayment('0');
+      setCheckOutPaymentMethod('CASH');
+      setCheckOutPaymentReference('');
+      setCheckOutPaymentNotes('');
+      toast.success('Guest checked out and invoice generated successfully');
     },
     onError: () => toast.error('Failed to check out'),
   });
@@ -166,6 +236,10 @@ export function BookingsPage() {
   const createCustomerMutation = useMutation({
     mutationFn: (data: any) => api.post('/customers', data),
     onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to create customer');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['customers-list'] });
       if (res.success && res.data) {
         setSelectedCustomerId(res.data.id);
@@ -174,6 +248,23 @@ export function BookingsPage() {
       setShowNewCustomer(false);
     },
     onError: () => toast.error('Failed to create customer'),
+  });
+
+  const generateInvoiceMutation = useMutation({
+    mutationFn: (bookingId: string) => api.post('/invoices', { bookingId }),
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to generate invoice');
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      const invoiceId = res?.data?.id;
+      if (invoiceId) {
+        window.open(`/invoice/${invoiceId}`, '_blank', 'noopener,noreferrer');
+      }
+      toast.success('Invoice generated successfully');
+    },
+    onError: () => toast.error('Failed to generate invoice'),
   });
 
   const closeCreateDialog = () => {
@@ -221,6 +312,17 @@ export function BookingsPage() {
       email: newCustomerEmail,
     });
   };
+
+  const selectedCheckOutBooking = bookings.find((bk) => bk.id === checkOutBookingId) || null;
+  const checkoutPreview = (checkoutPreviewData as any)?.data as CheckoutPreview | undefined;
+  const checkOutDue = checkoutPreview?.dueBeforeSettlement ?? selectedCheckOutBooking?.dueAmount ?? 0;
+  const checkOutPaymentAmount = parseFloat(checkOutPayment) || 0;
+  const checkOutRemaining = Math.max(checkOutDue - checkOutPaymentAmount, 0);
+
+  useEffect(() => {
+    if (!checkOutDialogOpen) return;
+    setCheckOutPayment(String(checkOutDue || 0));
+  }, [checkOutDialogOpen, checkOutDue]);
 
   return (
     <div className="space-y-6">
@@ -331,7 +433,14 @@ export function BookingsPage() {
                           variant="outline"
                           size="sm"
                           className="h-7 text-xs border-slate-500 text-slate-600 hover:bg-slate-50"
-                          onClick={() => checkOutMutation.mutate(booking.id)}
+                          onClick={() => {
+                            setCheckOutBookingId(booking.id);
+                            setCheckOutPayment(String(booking.dueAmount || 0));
+                            setCheckOutPaymentMethod('CASH');
+                            setCheckOutPaymentReference('');
+                            setCheckOutPaymentNotes('');
+                            setCheckOutDialogOpen(true);
+                          }}
                           disabled={checkOutMutation.isPending}
                         >
                           <LogOut className="w-3 h-3 mr-1" />
@@ -346,6 +455,18 @@ export function BookingsPage() {
                           onClick={() => toast.error('Cancel booking - confirmation needed')}
                         >
                           <XCircle className="w-3 h-3" />
+                        </Button>
+                      )}
+                      {(booking.status === 'CHECKED_OUT' || booking.status === 'CHECKED_IN') && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs border-amber-500 text-amber-700 hover:bg-amber-50"
+                          onClick={() => generateInvoiceMutation.mutate(booking.id)}
+                          disabled={generateInvoiceMutation.isPending}
+                        >
+                          <Receipt className="w-3 h-3 mr-1" />
+                          Invoice
                         </Button>
                       )}
                     </div>
@@ -456,6 +577,156 @@ export function BookingsPage() {
               }}
             >
               {checkInMutation.isPending ? 'Checking in...' : 'Confirm Check-in'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Check-out Settlement Dialog */}
+      <Dialog open={checkOutDialogOpen} onOpenChange={setCheckOutDialogOpen}>
+        <DialogContent className="max-w-3xl p-0 overflow-hidden max-h-[78vh] flex flex-col">
+          <DialogHeader className="border-b bg-slate-50 px-6 py-4">
+            <DialogTitle className="flex items-center gap-2">
+              <LogOut className="h-5 w-5 text-slate-700" />
+              Final Check-out & Invoice Settlement
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <Card className="border-amber-200 bg-gradient-to-r from-amber-50 to-emerald-50">
+              <CardContent className="p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 overflow-hidden rounded-lg border bg-white">
+                      <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={40} height={40} className="h-full w-full object-cover" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800">RRP Dream Inn</p>
+                      <p className="text-xs text-slate-500">Professional Final Settlement Invoice</p>
+                    </div>
+                  </div>
+                  <StatusBadge status="CHECKED_IN" />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Invoice Details</CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-2 text-sm">
+                <div className="grid grid-cols-2 gap-2">
+                  <p className="text-muted-foreground">Guest</p>
+                  <p className="font-medium text-right">{selectedCheckOutBooking?.customer?.name || '-'}</p>
+                  <p className="text-muted-foreground">Room</p>
+                  <p className="font-medium text-right">{selectedCheckOutBooking?.room?.roomNumber || '-'}</p>
+                  <p className="text-muted-foreground">Check-in</p>
+                  <p className="font-medium text-right">
+                    {selectedCheckOutBooking ? format(new Date(selectedCheckOutBooking.checkIn), 'MMM dd, yyyy') : '-'}
+                  </p>
+                  <p className="text-muted-foreground">Scheduled Check-out</p>
+                  <p className="font-medium text-right">
+                    {selectedCheckOutBooking ? format(new Date(selectedCheckOutBooking.checkOut), 'MMM dd, yyyy') : '-'}
+                  </p>
+                  <p className="text-muted-foreground">Room Charges</p>
+                  <p className="font-medium text-right">৳{(checkoutPreview?.roomCharges ?? selectedCheckOutBooking?.totalRoomCharge ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Restaurant Bill</p>
+                  <p className="font-medium text-right">৳{(checkoutPreview?.foodCharges ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Extra Charges</p>
+                  <p className="font-medium text-right">৳{(checkoutPreview?.extraCharges ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Subtotal</p>
+                  <p className="font-semibold text-right">৳{(checkoutPreview?.subtotal ?? selectedCheckOutBooking?.totalRoomCharge ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Discount</p>
+                  <p className="font-medium text-right text-emerald-700">৳{(checkoutPreview?.discount ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">VAT ({checkoutPreview?.vatPercent ?? 0}%)</p>
+                  <p className="font-medium text-right">৳{(checkoutPreview?.vatAmount ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Invoice Total</p>
+                  <p className="font-semibold text-right">৳{(checkoutPreview?.totalAmount ?? selectedCheckOutBooking?.totalRoomCharge ?? 0).toLocaleString()}</p>
+                  <p className="text-muted-foreground">Paid Amount</p>
+                  <p className="font-medium text-right text-emerald-700">৳{(checkoutPreview?.totalPaid ?? 0).toLocaleString()}</p>
+                </div>
+                <div className="border-t pt-2">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Current Due</span>
+                    <span className="font-semibold text-red-600">৳{checkOutDue.toLocaleString()}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Final Payment (BDT) *</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  value={checkOutPayment}
+                  onChange={(e) => setCheckOutPayment(e.target.value)}
+                  placeholder="Enter full due amount"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Remaining after payment: <span className={checkOutRemaining > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600 font-semibold'}>৳{checkOutRemaining.toLocaleString()}</span>
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Payment Method *</Label>
+                <Select value={checkOutPaymentMethod} onValueChange={setCheckOutPaymentMethod}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select method" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CASH">Cash</SelectItem>
+                    <SelectItem value="CARD">Card</SelectItem>
+                    <SelectItem value="MOBILE_BANKING">Mobile Banking</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Transaction Reference (optional)</Label>
+                <Input
+                  value={checkOutPaymentReference}
+                  onChange={(e) => setCheckOutPaymentReference(e.target.value)}
+                  placeholder="e.g. trx-id / card auth no"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Payment Notes (optional)</Label>
+                <Input
+                  value={checkOutPaymentNotes}
+                  onChange={(e) => setCheckOutPaymentNotes(e.target.value)}
+                  placeholder="Any settlement note"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="border-t bg-white px-6 py-4">
+            <Button variant="outline" onClick={() => setCheckOutDialogOpen(false)}>Cancel</Button>
+            <Button
+              className="bg-slate-800 hover:bg-slate-900 text-white"
+              disabled={
+                checkOutMutation.isPending ||
+                !checkOutBookingId ||
+                checkOutPaymentAmount <= 0 ||
+                checkOutPaymentAmount < checkOutDue
+              }
+              onClick={() => {
+                if (!checkOutBookingId) return;
+                if (checkOutPaymentAmount < checkOutDue) {
+                  toast.error('Please clear full due amount before checkout.');
+                  return;
+                }
+                checkOutMutation.mutate({
+                  id: checkOutBookingId,
+                  finalPayment: checkOutPaymentAmount,
+                  paymentMethod: checkOutPaymentMethod,
+                  paymentReference: checkOutPaymentReference || undefined,
+                  paymentNotes: checkOutPaymentNotes || undefined,
+                });
+              }}
+            >
+              {checkOutMutation.isPending ? 'Processing Checkout...' : 'Settle Due, Generate Invoice & Check-out'}
             </Button>
           </DialogFooter>
         </DialogContent>

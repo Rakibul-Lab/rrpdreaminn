@@ -100,7 +100,7 @@ export async function PUT(request: NextRequest) {
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
-    const { id, status, notes } = body;
+    const { id, status, notes, assignedTo } = body;
 
     if (!id) {
       return errorResponse('Task ID is required');
@@ -118,10 +118,24 @@ export async function PUT(request: NextRequest) {
     const updateData: Record<string, unknown> = {};
     if (status !== undefined) updateData.status = status;
     if (notes !== undefined) updateData.notes = notes;
+    if (assignedTo !== undefined) {
+      const assignedUser = await db.user.findUnique({
+        where: { id: assignedTo },
+        select: { id: true, active: true },
+      });
+      if (!assignedUser || !assignedUser.active) {
+        return errorResponse('Assigned user not found');
+      }
+      updateData.assignedTo = assignedUser.id;
+    }
 
     // Handle status transitions
     if (status === 'IN_PROGRESS') {
       updateData.startedAt = new Date();
+      await db.room.update({
+        where: { id: existing.roomId },
+        data: { status: 'CLEANING' },
+      });
     }
 
     if (status === 'COMPLETED') {

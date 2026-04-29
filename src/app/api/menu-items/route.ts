@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
 // POST /api/menu-items - Create menu item (ADMIN and RESTAURANT_STAFF only)
 export async function POST(request: NextRequest) {
   try {
-    const authResult = requireRole(request, 'ADMIN', 'RESTAURANT_STAFF');
+    const authResult = requireRole(request, 'ADMIN');
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();

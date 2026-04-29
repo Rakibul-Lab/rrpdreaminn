@@ -56,6 +56,14 @@ export async function POST(request: NextRequest) {
     const authResult = requireRole(request, 'ADMIN' as RoleType, 'HOTEL_STAFF' as RoleType);
     if (authResult instanceof Response) return authResult;
 
+    const authUser = await db.user.findUnique({
+      where: { id: authResult.id },
+      select: { id: true, active: true },
+    });
+    if (!authUser || !authUser.active) {
+      return errorResponse('Session expired. Please log out and log in again.', 401);
+    }
+
     const body = await request.json();
     const {
       customerId,
@@ -101,6 +109,24 @@ export async function POST(request: NextRequest) {
       return errorResponse('Check-out date must be after check-in date');
     }
 
+    // Prevent overlapping active bookings for the same room.
+    const overlappingBooking = await db.booking.findFirst({
+      where: {
+        roomId,
+        status: { in: ['RESERVED', 'CHECKED_IN'] },
+        checkIn: { lt: checkOutDate },
+        checkOut: { gt: checkInDate },
+      },
+      include: {
+        customer: { select: { name: true } },
+      },
+    });
+    if (overlappingBooking) {
+      return errorResponse(
+        `Room already has an active booking in this date range${overlappingBooking.customer?.name ? ` (${overlappingBooking.customer.name})` : ''}`
+      );
+    }
+
     // Calculate total room charge
     const totalRoomCharge = days * room.type.basePrice;
     const advance = advancePayment ? parseFloat(String(advancePayment)) : 0;
@@ -118,7 +144,7 @@ export async function POST(request: NextRequest) {
         advancePayment: advance,
         dueAmount,
         notes,
-        createdBy: authResult.id,
+        createdBy: authUser.id,
       },
       include: {
         customer: true,

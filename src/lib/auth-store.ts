@@ -6,6 +6,7 @@ export interface AuthState {
     id: string;
     email: string;
     name: string;
+    avatar?: string | null;
     role: 'ADMIN' | 'HOTEL_STAFF' | 'RESTAURANT_STAFF';
   } | null;
   token: string | null;

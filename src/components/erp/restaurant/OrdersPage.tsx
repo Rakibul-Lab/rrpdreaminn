@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { toast } from 'sonner'
@@ -293,9 +293,8 @@ export default function OrdersPage() {
                   const isExpanded = expandedRow === order.id
 
                   return (
-                    <>
+                    <Fragment key={order.id}>
                       <TableRow
-                        key={order.id}
                         className="cursor-pointer hover:bg-slate-50"
                         onClick={() => setExpandedRow(isExpanded ? null : order.id)}
                       >
@@ -407,7 +406,7 @@ export default function OrdersPage() {
                           </TableCell>
                         </TableRow>
                       )}
-                    </>
+                    </Fragment>
                   )
                 })}
               </TableBody>

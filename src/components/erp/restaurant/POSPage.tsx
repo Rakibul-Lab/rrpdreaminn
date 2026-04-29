@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useCallback } from 'react'
+import Image from 'next/image'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { useAuthStore } from '@/lib/auth-store'
@@ -22,6 +23,7 @@ import {
   X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
@@ -80,6 +82,7 @@ interface CartItem {
 }
 
 type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'ROOM_SERVICE'
+type DiscountType = 'PERCENTAGE' | 'AMOUNT'
 
 export default function POSPage() {
   const user = useAuthStore((s) => s.user)
@@ -95,7 +98,9 @@ export default function POSPage() {
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [discount, setDiscount] = useState<number>(0)
+  const [discountType, setDiscountType] = useState<DiscountType>('PERCENTAGE')
   const [notes, setNotes] = useState('')
+  const [showNotes, setShowNotes] = useState(false)
 
   // Fetch menu categories
   const { data: categoriesData, isLoading: categoriesLoading } = useQuery({
@@ -142,7 +147,9 @@ export default function POSPage() {
       // Clear cart and form
       setCart([])
       setDiscount(0)
+      setDiscountType('PERCENTAGE')
       setNotes('')
+      setShowNotes(false)
       setTableId('')
       setRoomId('')
       setCustomerName('')
@@ -204,14 +211,20 @@ export default function POSPage() {
   const clearCart = useCallback(() => {
     setCart([])
     setDiscount(0)
+    setDiscountType('PERCENTAGE')
     setNotes('')
+    setShowNotes(false)
   }, [])
 
   // Calculations
   const subtotal = cart.reduce((sum, c) => sum + c.menuItem.price * c.quantity, 0)
   const vatPercent = 15
-  const vatAmount = ((subtotal - discount) * vatPercent) / 100
-  const totalAmount = subtotal - discount + vatAmount
+  const discountAmount =
+    discountType === 'PERCENTAGE'
+      ? (subtotal * Math.max(0, Math.min(100, discount))) / 100
+      : Math.max(0, Math.min(subtotal, discount))
+  const vatAmount = ((subtotal - discountAmount) * vatPercent) / 100
+  const totalAmount = subtotal - discountAmount + vatAmount
 
   // Place order
   const handlePlaceOrder = () => {
@@ -235,8 +248,12 @@ export default function POSPage() {
       return
     }
 
-    if (discount > subtotal) {
-      toast.error('Invalid discount', { description: 'Discount cannot exceed subtotal.' })
+    if (discountType === 'PERCENTAGE' && discount > 100) {
+      toast.error('Invalid discount', { description: 'Discount percentage cannot exceed 100%.' })
+      return
+    }
+    if (discountType === 'AMOUNT' && discount > subtotal) {
+      toast.error('Invalid discount', { description: 'Discount amount cannot exceed subtotal.' })
       return
     }
 
@@ -247,7 +264,7 @@ export default function POSPage() {
         quantity: c.quantity,
       })),
       vatPercent,
-      discount,
+      discount: discountAmount,
       notes: notes.trim() || undefined,
     }
 
@@ -268,8 +285,19 @@ export default function POSPage() {
   // Available tables for dine-in
   const availableTables = tables.filter((t) => t.status === 'available')
 
+  const getItemImageSrc = (item: MenuItem) => {
+    if (item.image && item.image.trim()) return item.image
+    const params = new URLSearchParams({
+      seed: item.id,
+      name: item.name,
+      w: '360',
+      h: '220',
+    })
+    return `/api/placeholder/food?${params.toString()}`
+  }
+
   return (
-    <div className="flex h-full bg-slate-50 overflow-hidden">
+    <div className="flex h-[calc(100dvh-8.5rem)] max-h-[calc(100dvh-8.5rem)] bg-slate-50 overflow-hidden">
       {/* Left Panel - Menu */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
@@ -356,7 +384,7 @@ export default function POSPage() {
         </div>
 
         {/* Menu Items Grid */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto p-4 [scrollbar-width:none] hover:[scrollbar-width:thin] [&::-webkit-scrollbar]:w-0 hover:[&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-transparent hover:[&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:rounded-full">
           {menuLoading ? (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               {Array.from({ length: 12 }).map((_, i) => (
@@ -385,6 +413,16 @@ export default function POSPage() {
                         : 'border-slate-100 hover:border-amber-200'
                     }`}
                   >
+                    <div className="mb-2 overflow-hidden rounded-md border border-slate-100 bg-slate-50">
+                      <Image
+                        src={getItemImageSrc(item)}
+                        alt={item.name}
+                        width={360}
+                        height={220}
+                        className="h-24 w-full object-cover"
+                        unoptimized
+                      />
+                    </div>
                     <div className="flex items-start justify-between gap-1">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 mb-1">
@@ -432,7 +470,7 @@ export default function POSPage() {
       </div>
 
       {/* Right Panel - Order */}
-      <div className="w-[380px] bg-white border-l flex flex-col shrink-0 shadow-xl">
+      <div className="w-[380px] bg-white border-l flex flex-col shrink-0 shadow-xl h-full max-h-full overflow-hidden">
         {/* Order Header */}
         <div className="px-4 py-3 bg-slate-900 text-white shrink-0">
           <div className="flex items-center justify-between mb-3">
@@ -580,7 +618,7 @@ export default function POSPage() {
         </div>
 
         {/* Cart Items */}
-        <ScrollArea className="flex-1 min-h-0">
+        <ScrollArea className="flex-1 min-h-0 overflow-hidden">
           <div className="p-4">
             {cart.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-slate-300">
@@ -647,9 +685,21 @@ export default function POSPage() {
         </ScrollArea>
 
         {/* Order Summary & Actions */}
-        <div className="border-t bg-white shrink-0">
+        <div className="border-t bg-white shrink-0 sticky bottom-0 z-10">
           {/* Notes */}
           {cart.length > 0 && (
+            <div className="px-4 pt-3">
+              <div className="flex justify-end items-center gap-2">
+                <span className="text-xs font-medium text-slate-600">Notes</span>
+                <Switch
+                  checked={showNotes}
+                  onCheckedChange={setShowNotes}
+                  className="data-[state=checked]:bg-black data-[state=unchecked]:bg-slate-300"
+                />
+              </div>
+            </div>
+          )}
+          {cart.length > 0 && showNotes && (
             <div className="px-4 pt-3">
               <Textarea
                 placeholder="Special instructions..."
@@ -668,17 +718,33 @@ export default function POSPage() {
             </div>
             <div className="flex justify-between text-sm items-center">
               <span className="text-slate-500">Discount</span>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
+                <Select
+                  value={discountType}
+                  onValueChange={(v) => setDiscountType(v as DiscountType)}
+                >
+                  <SelectTrigger className="h-7 w-[98px] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="PERCENTAGE">Percentage</SelectItem>
+                    <SelectItem value="AMOUNT">Amount</SelectItem>
+                  </SelectContent>
+                </Select>
                 <Input
                   type="number"
                   min={0}
-                  max={subtotal}
+                  max={discountType === 'PERCENTAGE' ? 100 : subtotal}
                   value={discount || ''}
                   onChange={(e) => setDiscount(Math.max(0, Number(e.target.value) || 0))}
                   className="h-7 w-20 text-right text-xs"
-                  placeholder="0"
+                  placeholder={discountType === 'PERCENTAGE' ? '%' : '৳'}
                 />
               </div>
+            </div>
+            <div className="flex justify-between text-xs text-slate-500">
+              <span>Discount Applied</span>
+              <span>৳{discountAmount.toFixed(0)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">VAT ({vatPercent}%)</span>

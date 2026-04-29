@@ -75,7 +75,11 @@ export function CustomersPage() {
 
   const createMutation = useMutation({
     mutationFn: (body: any) => api.post('/customers', body),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to create customer');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       toast.success('Customer created successfully');
       closeDialog();
@@ -85,7 +89,11 @@ export function CustomersPage() {
 
   const updateMutation = useMutation({
     mutationFn: (body: any) => api.put(`/customers/${body.id}`, body),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to update customer');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       toast.success('Customer updated successfully');
       closeDialog();

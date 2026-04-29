@@ -41,8 +41,15 @@ interface RoomType {
   capacity: number;
 }
 
+interface HousekeepingTaskLite {
+  id: string;
+  roomId: string;
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
+}
+
 export function RoomsPage() {
   const queryClient = useQueryClient();
+  const FLOOR_OPTIONS = [8, 9, 10];
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [floorFilter, setFloorFilter] = useState<string>('all');
@@ -53,7 +60,7 @@ export function RoomsPage() {
 
   // Form state
   const [formRoomNumber, setFormRoomNumber] = useState('');
-  const [formFloor, setFormFloor] = useState('1');
+  const [formFloor, setFormFloor] = useState('8');
   const [formTypeId, setFormTypeId] = useState('');
   const [formStatus, setFormStatus] = useState('AVAILABLE');
 
@@ -78,11 +85,25 @@ export function RoomsPage() {
     queryFn: () => api.get<{ success: boolean; data: Room[]; meta: { total: number } }>(buildQuery()),
   });
 
-  const rooms = ((roomsData as any)?.data || []) as Room[];
+  const { data: housekeepingInProgressData } = useQuery({
+    queryKey: ['housekeeping-room-status', 'IN_PROGRESS'],
+    queryFn: () =>
+      api.get<{ success: boolean; data: HousekeepingTaskLite[]; meta: { total: number } }>(
+        '/housekeeping?status=IN_PROGRESS&limit=200'
+      ),
+  });
 
-  const filteredRooms = search
+  const rooms = ((roomsData as any)?.data || []) as Room[];
+  const housekeepingInProgress = ((housekeepingInProgressData as any)?.data || []) as HousekeepingTaskLite[];
+  const roomsWithCleaningInProgress = new Set(housekeepingInProgress.map((t) => t.roomId));
+
+  const filteredRooms = (search
     ? rooms.filter((r) => r.roomNumber.includes(search) || r.type?.name?.toLowerCase().includes(search.toLowerCase()))
-    : rooms;
+    : rooms)
+    .sort((a, b) => {
+      if (a.floor !== b.floor) return a.floor - b.floor;
+      return Number(a.roomNumber) - Number(b.roomNumber);
+    });
 
   const createMutation = useMutation({
     mutationFn: (data: any) => api.post('/rooms', data),
@@ -108,7 +129,7 @@ export function RoomsPage() {
     setAddDialogOpen(false);
     setEditRoom(null);
     setFormRoomNumber('');
-    setFormFloor('1');
+    setFormFloor('8');
     setFormTypeId('');
     setFormStatus('AVAILABLE');
   };
@@ -147,12 +168,11 @@ export function RoomsPage() {
       case 'AVAILABLE': return 'border-l-emerald-500';
       case 'OCCUPIED': return 'border-l-red-500';
       case 'CLEANING': return 'border-l-amber-500';
+      case 'IN_PROGRESS': return 'border-l-orange-500';
       case 'MAINTENANCE': return 'border-l-slate-400';
       default: return 'border-l-slate-300';
     }
   };
-
-  const floors = [...new Set(rooms.map((r) => r.floor))].sort();
 
   return (
     <div className="space-y-6">
@@ -197,7 +217,7 @@ export function RoomsPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Floors</SelectItem>
-            {[1, 2, 3, 4, 5].map((f) => (
+            {FLOOR_OPTIONS.map((f) => (
               <SelectItem key={f} value={String(f)}>Floor {f}</SelectItem>
             ))}
           </SelectContent>
@@ -243,15 +263,21 @@ export function RoomsPage() {
       ) : viewMode === 'grid' ? (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {filteredRooms.map((room) => (
+            (() => {
+              const displayStatus =
+                room.status === 'CLEANING' && roomsWithCleaningInProgress.has(room.id)
+                  ? 'IN_PROGRESS'
+                  : room.status;
+              return (
             <Card
               key={room.id}
-              className={`cursor-pointer border-l-4 ${getStatusBorderColor(room.status)} hover:shadow-md transition-shadow`}
+              className={`cursor-pointer border-l-4 ${getStatusBorderColor(displayStatus)} hover:shadow-md transition-shadow`}
               onClick={() => openEditDialog(room)}
             >
               <CardContent className="p-3">
                 <div className="flex items-center justify-between mb-2">
                   <BedDouble className="w-5 h-5 text-muted-foreground" />
-                  <StatusBadge status={room.status} />
+                  <StatusBadge status={displayStatus} />
                 </div>
                 <p className="text-lg font-bold">{room.roomNumber}</p>
                 <p className="text-xs text-muted-foreground">{room.type?.name}</p>
@@ -259,6 +285,8 @@ export function RoomsPage() {
                 <p className="text-xs text-muted-foreground">Floor {room.floor}</p>
               </CardContent>
             </Card>
+              );
+            })()
           ))}
         </div>
       ) : (
@@ -276,18 +304,26 @@ export function RoomsPage() {
             </thead>
             <tbody>
               {filteredRooms.map((room) => (
+                (() => {
+                  const displayStatus =
+                    room.status === 'CLEANING' && roomsWithCleaningInProgress.has(room.id)
+                      ? 'IN_PROGRESS'
+                      : room.status;
+                  return (
                 <tr key={room.id} className="border-t hover:bg-muted/30">
                   <td className="p-3 font-medium">{room.roomNumber}</td>
                   <td className="p-3">{room.floor}</td>
                   <td className="p-3">{room.type?.name}</td>
                   <td className="p-3">৳{room.type?.basePrice?.toLocaleString()}</td>
-                  <td className="p-3"><StatusBadge status={room.status} /></td>
+                  <td className="p-3"><StatusBadge status={displayStatus} /></td>
                   <td className="p-3">
                     <Button variant="ghost" size="sm" onClick={() => openEditDialog(room)}>
                       Edit
                     </Button>
                   </td>
                 </tr>
+                  );
+                })()
               ))}
             </tbody>
           </table>
@@ -316,7 +352,7 @@ export function RoomsPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {[1, 2, 3, 4, 5].map((f) => (
+                  {FLOOR_OPTIONS.map((f) => (
                     <SelectItem key={f} value={String(f)}>Floor {f}</SelectItem>
                   ))}
                 </SelectContent>

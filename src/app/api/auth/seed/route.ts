@@ -118,10 +118,10 @@ export async function POST() {
       },
     });
 
-    // Create Rooms (Floors 1-5)
+    // Create Rooms (Floors 8-10): 801-815, 901-915, 1001-1015
     const roomData = [];
-    for (let floor = 1; floor <= 5; floor++) {
-      for (let room = 1; room <= 8; room++) {
+    for (let floor = 8; floor <= 10; floor++) {
+      for (let room = 1; room <= 15; room++) {
         const roomNumber = `${floor}${room.toString().padStart(2, '0')}`;
         let typeId = standard.id;
         if (room <= 2) typeId = suite.id;

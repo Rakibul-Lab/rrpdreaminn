@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import Image from 'next/image'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { useAuthStore, canAccessAdmin } from '@/lib/auth-store'
@@ -31,6 +32,7 @@ interface UserData {
   name: string
   role: string
   phone: string | null
+  avatar: string | null
   active: boolean
   createdAt: string
 }
@@ -48,7 +50,7 @@ const roleColors: Record<string, string> = {
 }
 
 export default function UsersPage() {
-  const { user } = useAuthStore()
+  const { user, token, login } = useAuthStore()
   const { toast } = useToast()
   const queryClient = useQueryClient()
   const [showDialog, setShowDialog] = useState(false)
@@ -59,7 +61,10 @@ export default function UsersPage() {
     password: '',
     role: 'HOTEL_STAFF',
     phone: '',
+    avatar: null as string | null,
   })
+  const avatarInputRef = useRef<HTMLInputElement | null>(null)
+  const [avatarInputKey, setAvatarInputKey] = useState(0)
 
   const { data: usersData, isLoading } = useQuery({
     queryKey: ['users'],
@@ -88,9 +93,24 @@ export default function UsersPage() {
     mutationFn: async (data: Record<string, unknown>) => {
       return api.put('/users', data)
     },
-    onSuccess: (res) => {
+    onSuccess: (res: any) => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
       toast({ title: 'User Updated', description: res.message || 'User updated successfully' })
+
+      // If current logged-in user was edited (e.g., avatar changed), refresh auth store immediately.
+      if (user && token && res?.data?.id === user.id) {
+        login(
+          {
+            id: res.data.id,
+            email: res.data.email,
+            name: res.data.name,
+            role: res.data.role,
+            avatar: res.data.avatar ?? null,
+          },
+          token
+        )
+      }
+
       closeDialog()
     },
     onError: () => {
@@ -114,7 +134,8 @@ export default function UsersPage() {
   const closeDialog = () => {
     setShowDialog(false)
     setEditingUser(null)
-    setForm({ name: '', email: '', password: '', role: 'HOTEL_STAFF', phone: '' })
+    setForm({ name: '', email: '', password: '', role: 'HOTEL_STAFF', phone: '', avatar: null })
+    setAvatarInputKey((k) => k + 1)
   }
 
   const openEditDialog = (u: UserData) => {
@@ -125,14 +146,37 @@ export default function UsersPage() {
       password: '',
       role: u.role,
       phone: u.phone || '',
+      avatar: u.avatar || null,
     })
+    setAvatarInputKey((k) => k + 1)
     setShowDialog(true)
   }
 
   const openAddDialog = () => {
     setEditingUser(null)
-    setForm({ name: '', email: '', password: '', role: 'HOTEL_STAFF', phone: '' })
+    setForm({ name: '', email: '', password: '', role: 'HOTEL_STAFF', phone: '', avatar: null })
+    setAvatarInputKey((k) => k + 1)
     setShowDialog(true)
+  }
+
+  const handleChooseAvatar = async (file: File | null) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      toast({ title: 'Invalid file', description: 'Please select an image file', variant: 'destructive' })
+      return
+    }
+    const maxBytes = 2 * 1024 * 1024
+    if (file.size > maxBytes) {
+      toast({ title: 'Image too large', description: 'Please choose an image under 2MB', variant: 'destructive' })
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result || '')
+      setForm((f) => ({ ...f, avatar: result || null }))
+    }
+    reader.onerror = () => toast({ title: 'Error', description: 'Failed to read image', variant: 'destructive' })
+    reader.readAsDataURL(file)
   }
 
   const handleSubmit = () => {
@@ -143,6 +187,7 @@ export default function UsersPage() {
         email: form.email,
         role: form.role,
         phone: form.phone || null,
+        avatar: form.avatar,
       }
       if (form.password) data.password = form.password
       updateMutation.mutate(data)
@@ -219,7 +264,18 @@ export default function UsersPage() {
                 ) : (
                   users.map((u) => (
                     <TableRow key={u.id} className="hover:bg-slate-50">
-                      <TableCell className="font-medium">{u.name}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          <div className="h-8 w-8 rounded-full border bg-slate-100 overflow-hidden flex items-center justify-center text-xs font-semibold text-slate-600">
+                            {u.avatar ? (
+                              <Image src={u.avatar} alt={u.name} width={32} height={32} className="h-full w-full object-cover" unoptimized />
+                            ) : (
+                              <span>{u.name?.charAt(0) || 'U'}</span>
+                            )}
+                          </div>
+                          <span>{u.name}</span>
+                        </div>
+                      </TableCell>
                       <TableCell className="text-sm text-slate-600">{u.email}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className={`${roleColors[u.role] || ''} flex items-center gap-1 w-fit`}>
@@ -270,6 +326,41 @@ export default function UsersPage() {
             <DialogTitle>{editingUser ? 'Edit User' : 'Add New User'}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <div>
+              <Label>Profile Image</Label>
+              <div className="mt-2 flex items-center gap-3">
+                <div className="h-14 w-14 rounded-full border bg-slate-100 overflow-hidden flex items-center justify-center text-sm font-semibold text-slate-600">
+                  {form.avatar ? (
+                    <Image src={form.avatar} alt="Avatar preview" width={56} height={56} className="h-full w-full object-cover" unoptimized />
+                  ) : (
+                    <span>{form.name?.charAt(0) || 'U'}</span>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <Input
+                    key={avatarInputKey}
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleChooseAvatar(e.target.files?.[0] || null)}
+                  />
+                  <div className="mt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setForm((f) => ({ ...f, avatar: null }))
+                        if (avatarInputRef.current) avatarInputRef.current.value = ''
+                        setAvatarInputKey((k) => k + 1)
+                      }}
+                    >
+                      Remove Image
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div>
               <Label>Name</Label>
               <Input

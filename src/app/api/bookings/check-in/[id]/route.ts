@@ -12,6 +12,14 @@ export async function POST(
     const authResult = requireRole(request, 'ADMIN' as RoleType, 'HOTEL_STAFF' as RoleType);
     if (authResult instanceof Response) return authResult;
 
+    const authUser = await db.user.findUnique({
+      where: { id: authResult.id },
+      select: { id: true, active: true },
+    });
+    if (!authUser || !authUser.active) {
+      return errorResponse('Session expired. Please log out and log in again.', 401);
+    }
+
     const { id } = await params;
     const body = await request.json();
     const { initialPayment, paymentMethod } = body;
@@ -66,14 +74,14 @@ export async function POST(
           method: paymentMethod || 'CASH',
           paymentType: 'INITIAL',
           bookingId: id,
-          receivedBy: authResult.id,
+          receivedBy: authUser.id,
           notes: 'Initial payment at check-in',
         },
       });
     }
 
     await logActivity(
-      authResult.id,
+      authUser.id,
       'CHECK_IN',
       'hotel',
       JSON.stringify({

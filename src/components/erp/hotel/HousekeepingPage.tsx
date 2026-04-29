@@ -47,6 +47,10 @@ export function HousekeepingPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [startDialogOpen, setStartDialogOpen] = useState(false);
+  const [startTask, setStartTask] = useState<HousekeepingTask | null>(null);
+  const [startAssignedTo, setStartAssignedTo] = useState('');
+  const [startNotes, setStartNotes] = useState('');
 
   // Form state
   const [formRoomId, setFormRoomId] = useState('');
@@ -103,9 +107,18 @@ export function HousekeepingPage() {
 
   const updateMutation = useMutation({
     mutationFn: (body: any) => api.put('/housekeeping', body),
-    onSuccess: () => {
+    onSuccess: (res: any) => {
+      if (!res?.success) {
+        toast.error(res?.error || res?.message || 'Failed to update task');
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: ['housekeeping'] });
+      queryClient.invalidateQueries({ queryKey: ['rooms'] });
       toast.success('Task updated successfully');
+      setStartDialogOpen(false);
+      setStartTask(null);
+      setStartAssignedTo('');
+      setStartNotes('');
     },
     onError: () => toast.error('Failed to update task'),
   });
@@ -133,6 +146,27 @@ export function HousekeepingPage() {
 
   const handleStatusUpdate = (taskId: string, newStatus: string) => {
     updateMutation.mutate({ id: taskId, status: newStatus });
+  };
+
+  const openStartDialog = (task: HousekeepingTask) => {
+    setStartTask(task);
+    setStartAssignedTo(task.assignedTo || '');
+    setStartNotes(task.notes || '');
+    setStartDialogOpen(true);
+  };
+
+  const handleStartTask = () => {
+    if (!startTask) return;
+    if (!startAssignedTo.trim()) {
+      toast.error('Staff user ID is required');
+      return;
+    }
+    updateMutation.mutate({
+      id: startTask.id,
+      status: 'IN_PROGRESS',
+      assignedTo: startAssignedTo.trim(),
+      notes: startNotes || null,
+    });
   };
 
   const getTaskTypeIcon = (type: string) => {
@@ -269,7 +303,7 @@ export function HousekeepingPage() {
                           variant="outline"
                           size="sm"
                           className="h-7 text-xs border-amber-500 text-amber-700 hover:bg-amber-50"
-                          onClick={() => handleStatusUpdate(task.id, 'IN_PROGRESS')}
+                          onClick={() => openStartDialog(task)}
                           disabled={updateMutation.isPending}
                         >
                           <Play className="w-3 h-3 mr-1" />
@@ -364,6 +398,62 @@ export function HousekeepingPage() {
               disabled={createMutation.isPending}
             >
               {createMutation.isPending ? 'Creating...' : 'Create Task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Start Cleaning Dialog */}
+      <Dialog
+        open={startDialogOpen}
+        onOpenChange={(open) => {
+          setStartDialogOpen(open);
+          if (!open) {
+            setStartTask(null);
+            setStartAssignedTo('');
+            setStartNotes('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Start Cleaning</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/40 p-3 text-sm">
+              <p className="font-medium">Room {startTask?.room?.roomNumber || '-'}</p>
+              <p className="text-xs text-muted-foreground">
+                {startTask?.taskType ? startTask.taskType.replace('_', ' ') : 'Cleaning task'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Staff User ID *</Label>
+              <Input
+                value={startAssignedTo}
+                onChange={(e) => setStartAssignedTo(e.target.value)}
+                placeholder="Enter staff user id"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={startNotes}
+                onChange={(e) => setStartNotes(e.target.value)}
+                placeholder="Cleaning instructions..."
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStartDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={handleStartTask}
+              disabled={updateMutation.isPending}
+            >
+              {updateMutation.isPending ? 'Starting...' : 'Start Cleaning'}
             </Button>
           </DialogFooter>
         </DialogContent>

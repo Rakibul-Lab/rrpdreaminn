@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
+import Image from 'next/image'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore, canAccessHotel, canAccessRestaurant, canAccessAdmin } from '@/lib/auth-store'
 import { api } from '@/lib/api-client'
 import {
   LayoutDashboard, FileText, CreditCard, BarChart3, Users, Settings,
   ScrollText, Package, LogOut, Hotel, UtensilsCrossed, Menu, X,
-  Building2, Bed, CalendarCheck, UserCircle, SprayCan, ShoppingCart,
+  Bed, CalendarCheck, UserCircle, SprayCan, ShoppingCart,
   ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -15,6 +17,11 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useToast } from '@/hooks/use-toast'
 
 // Page components - Hotel (named exports)
@@ -52,6 +59,15 @@ interface NavItem {
   group: string
 }
 
+interface AppNotification {
+  id: string
+  title: string
+  message: string
+  type: string
+  read: boolean
+  createdAt: string
+}
+
 const navItems: NavItem[] = [
   // Hotel - RRP Dream Inn
   { key: 'hotel-dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
@@ -80,6 +96,8 @@ const navItems: NavItem[] = [
   { key: 'logs', label: 'Activity Logs', icon: <ScrollText className="h-4 w-4" />, allowedRoles: ['ADMIN'], group: 'System' },
 ]
 
+const CURRENT_PAGE_STORAGE_KEY = 'erp-current-page'
+
 function LoginForm() {
   const { login } = useAuthStore()
   const { toast } = useToast()
@@ -92,7 +110,7 @@ function LoginForm() {
     e.preventDefault()
     setLoading(true)
     try {
-      const res = await api.post<{ success: boolean; data: { user: { id: string; email: string; name: string; role: string }; token: string } }>('/auth/login', { email, password })
+      const res = await api.post<{ success: boolean; data: { user: { id: string; email: string; name: string; avatar?: string | null; role: string }; token: string } }>('/auth/login', { email, password })
       if (res.success && res.data) {
         login(res.data.user as any, res.data.token)
         toast({ title: 'Welcome!', description: `Logged in as ${res.data.user.name}` })
@@ -132,8 +150,8 @@ function LoginForm() {
       <div className="w-full max-w-lg">
         {/* Branding */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500 to-emerald-600 shadow-lg mb-4">
-            <Building2 className="h-8 w-8 text-white" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white shadow-lg mb-4 border border-slate-200 overflow-hidden">
+            <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={64} height={64} className="h-full w-full object-cover" />
           </div>
           <h1 className="text-3xl font-bold text-slate-800">ERP System</h1>
           <div className="flex items-center justify-center gap-3 mt-2">
@@ -279,18 +297,56 @@ const pageTitles: Record<PageKey, string> = {
 
 function ERPApp() {
   const { user, logout } = useAuthStore()
-  const [currentPage, setCurrentPage] = useState<PageKey>(() => getDefaultPage(user?.role))
+  const queryClient = useQueryClient()
+  const [currentPage, setCurrentPage] = useState<PageKey>('hotel-dashboard')
+  const [pageRefreshNonce, setPageRefreshNonce] = useState(0)
+  const [headerLoading, setHeaderLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const prevUserId = useRef<string | null>(user?.id || null)
+  const [now, setNow] = useState<Date>(() => new Date())
 
-  // Update page when user changes (login/logout)
-  if (user?.id !== prevUserId.current) {
-    prevUserId.current = user?.id || null
-    const defaultPage = getDefaultPage(user?.role)
-    if (currentPage !== defaultPage) {
-      setCurrentPage(defaultPage)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const isPageAllowedForRole = useCallback((page: PageKey, role: string | undefined): boolean => {
+    if (!role) return false
+    return navItems.some((item) => item.key === page && item.allowedRoles.includes(role))
+  }, [])
+
+  const getSavedPage = useCallback((): PageKey | null => {
+    if (typeof window === 'undefined') return null
+    const saved = window.localStorage.getItem(CURRENT_PAGE_STORAGE_KEY)
+    if (!saved) return null
+    return saved as PageKey
+  }, [])
+
+  // Restore page on login/reload and enforce role-safe fallback.
+  useEffect(() => {
+    if (!user?.role) return
+
+    const savedPage = getSavedPage()
+    const targetPage =
+      savedPage && isPageAllowedForRole(savedPage, user.role)
+        ? savedPage
+        : getDefaultPage(user.role)
+
+    setCurrentPage((prev) => (prev === targetPage ? prev : targetPage))
+  }, [user?.id, user?.role, getSavedPage, isPageAllowedForRole])
+
+  // Persist current section so refresh lands on same page.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !user?.role) return
+    if (!isPageAllowedForRole(currentPage, user.role)) return
+    window.localStorage.setItem(CURRENT_PAGE_STORAGE_KEY, currentPage)
+  }, [currentPage, user?.role, isPageAllowedForRole])
+
+  const handleLogout = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(CURRENT_PAGE_STORAGE_KEY)
     }
-  }
+    logout()
+  }, [logout])
 
   // Get allowed nav items based on role
   const allowedNavItems = navItems.filter(
@@ -303,9 +359,26 @@ function ERPApp() {
     RESTAURANT_STAFF: 'bg-amber-50 text-amber-700 border-amber-200',
   }
 
+  const handlePageNavigation = useCallback((page: PageKey) => {
+    setHeaderLoading(true)
+    setCurrentPage((prev) => {
+      if (prev === page) {
+        setPageRefreshNonce((nonce) => nonce + 1)
+      }
+      return page
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!headerLoading) return
+
+    const timer = setTimeout(() => setHeaderLoading(false), 550)
+    return () => clearTimeout(timer)
+  }, [headerLoading, currentPage, pageRefreshNonce])
+
   const renderPage = useCallback(() => {
     switch (currentPage) {
-      case 'hotel-dashboard': return <HotelDashboard />
+      case 'hotel-dashboard': return <HotelDashboard onNavigate={handlePageNavigation} />
       case 'rooms': return <RoomsPage />
       case 'room-types': return <RoomTypesPage />
       case 'bookings': return <BookingsPage />
@@ -324,9 +397,27 @@ function ERPApp() {
       case 'settings': return <SettingsPage />
       case 'logs': return <ActivityLogsPage />
       case 'inventory': return <InventoryPage />
-      default: return <HotelDashboard />
+      default: return <HotelDashboard onNavigate={handlePageNavigation} />
     }
-  }, [currentPage])
+  }, [currentPage, handlePageNavigation])
+
+  const { data: notifRes } = useQuery({
+    queryKey: ['header-notifications'],
+    queryFn: () =>
+      api.get<{ success: boolean; data: AppNotification[]; meta?: { total: number } }>(
+        '/notifications?limit=10'
+      ),
+    refetchInterval: 2000,
+  })
+  const notifications = notifRes?.data || []
+  const unreadCount = notifications.filter((n) => !n.read).length
+
+  const markAllReadMutation = useMutation({
+    mutationFn: () => api.put('/notifications', { markAll: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['header-notifications'] })
+    },
+  })
 
   // Group nav items
   const groupedNav: Record<string, NavItem[]> = {}
@@ -359,7 +450,7 @@ function ERPApp() {
       {items.map((item) => (
         <button
           key={item.key}
-          onClick={() => { setCurrentPage(item.key); setSidebarOpen(false) }}
+          onClick={() => { handlePageNavigation(item.key); setSidebarOpen(false) }}
           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 ${
             currentPage === item.key
               ? `${groupBgColors[group] || 'bg-amber-50'} font-semibold ${groupColors[group] || 'text-amber-700'}`
@@ -375,12 +466,20 @@ function ERPApp() {
 
   return (
     <div className="min-h-screen flex bg-slate-50">
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-[70] h-1 overflow-hidden">
+        <div
+          className={`h-full bg-gradient-to-r from-amber-500 via-emerald-500 to-amber-500 shadow-[0_0_10px_rgba(16,185,129,0.55)] transition-all duration-500 ease-out ${
+            headerLoading ? 'w-full opacity-100' : 'w-0 opacity-0'
+          }`}
+        />
+      </div>
+
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:flex lg:w-60 lg:flex-col bg-white border-r border-slate-200 shadow-sm fixed inset-y-0 left-0 z-30">
         <div className="p-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-gradient-to-br from-amber-500 to-emerald-600 shadow-sm">
-              <Building2 className="h-5 w-5 text-white" />
+            <div className="h-9 w-9 rounded-xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+              <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={36} height={36} className="h-full w-full object-cover" />
             </div>
             <div>
               <h1 className="font-bold text-slate-800 text-sm leading-tight">RRP Dream Inn</h1>
@@ -395,8 +494,12 @@ function ERPApp() {
 
         <div className="p-3 border-t border-slate-100 bg-slate-50/50">
           <div className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-sm font-bold text-slate-600 shadow-sm">
-              {user?.name?.charAt(0) || 'U'}
+            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-slate-200 to-slate-300 flex items-center justify-center text-sm font-bold text-slate-600 shadow-sm overflow-hidden">
+              {user?.avatar ? (
+                <img src={user.avatar} alt={user.name || 'User avatar'} className="h-full w-full object-cover" />
+              ) : (
+                <span>{user?.name?.charAt(0) || 'U'}</span>
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-700 truncate">{user?.name}</p>
@@ -406,7 +509,7 @@ function ERPApp() {
                 {user?.role?.replace('_', ' ')}
               </Badge>
             </div>
-            <Button variant="ghost" size="icon" onClick={logout} title="Logout" className="h-8 w-8">
+            <Button variant="ghost" size="icon" onClick={handleLogout} title="Logout" className="h-8 w-8">
               <LogOut className="h-4 w-4 text-slate-400" />
             </Button>
           </div>
@@ -420,8 +523,8 @@ function ERPApp() {
           <aside className="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 animate-in slide-in-from-left duration-200">
             <div className="p-4 border-b border-slate-100 flex justify-between items-center">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-gradient-to-br from-amber-500 to-emerald-600">
-                  <Building2 className="h-4 w-4 text-white" />
+                <div className="h-7 w-7 rounded-lg bg-white border border-slate-200 overflow-hidden">
+                  <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={28} height={28} className="h-full w-full object-cover" />
                 </div>
                 <span className="font-bold text-slate-800 text-sm">ERP System</span>
               </div>
@@ -434,14 +537,18 @@ function ERPApp() {
             </nav>
             <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-slate-100 bg-white">
               <div className="flex items-center gap-2">
-                <div className="h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-sm font-bold text-slate-600">
-                  {user?.name?.charAt(0) || 'U'}
+                <div className="h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-sm font-bold text-slate-600 overflow-hidden">
+                  {user?.avatar ? (
+                    <img src={user.avatar} alt={user.name || 'User avatar'} className="h-full w-full object-cover" />
+                  ) : (
+                    <span>{user?.name?.charAt(0) || 'U'}</span>
+                  )}
                 </div>
                 <div className="flex-1">
                   <p className="text-sm font-medium text-slate-700">{user?.name}</p>
                   <p className="text-xs text-slate-400">{user?.role?.replace('_', ' ')}</p>
                 </div>
-                <Button variant="ghost" size="icon" onClick={logout} className="h-8 w-8">
+                <Button variant="ghost" size="icon" onClick={handleLogout} className="h-8 w-8">
                   <LogOut className="h-4 w-4 text-slate-400" />
                 </Button>
               </div>
@@ -465,9 +572,72 @@ function ERPApp() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" className="relative h-9 w-9" onClick={() => setCurrentPage('orders')}>
-              <Bell className="h-4 w-4 text-slate-500" />
-            </Button>
+            <div className="hidden md:flex items-center rounded-md border bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+              {now.toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })}
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="relative h-9 w-9">
+                  <Bell className="h-4 w-4 text-slate-500" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-[10px] font-semibold text-white flex items-center justify-center">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[340px] p-0">
+                <div className="px-3 py-2 border-b bg-slate-50/70">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-slate-800">Notifications</p>
+                    <button
+                      type="button"
+                      onClick={() => markAllReadMutation.mutate()}
+                      disabled={markAllReadMutation.isPending || unreadCount === 0}
+                      className="text-xs text-amber-700 hover:text-amber-800 disabled:text-slate-300"
+                    >
+                      Mark all read
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {unreadCount} unread
+                  </p>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="px-3 py-6 text-center text-xs text-slate-400">
+                      No notifications yet
+                    </div>
+                  ) : (
+                    notifications.map((n) => (
+                      <div
+                        key={n.id}
+                        className={`px-3 py-2 border-b last:border-b-0 ${n.read ? 'bg-white' : 'bg-amber-50/40'}`}
+                      >
+                        <p className="text-sm font-medium text-slate-800">{n.title}</p>
+                        <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{n.message}</p>
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          {new Date(n.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="px-3 py-2 border-t bg-slate-50/60">
+                  <button
+                    type="button"
+                    onClick={() => handlePageNavigation('orders')}
+                    className="text-xs text-slate-600 hover:text-slate-800"
+                  >
+                    Go to orders
+                  </button>
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Badge variant="outline" className={`hidden sm:flex text-xs items-center gap-1 ${roleBadgeColors[user?.role || ''] || ''}`}>
               {user?.role === 'ADMIN' && <LayoutDashboard className="h-3 w-3" />}
               {user?.role === 'HOTEL_STAFF' && <Hotel className="h-3 w-3" />}
@@ -478,7 +648,7 @@ function ERPApp() {
         </header>
 
         {/* Page Content */}
-        <div className="flex-1 p-4 md:p-6 overflow-auto">
+        <div key={`${currentPage}-${pageRefreshNonce}`} className="flex-1 p-4 md:p-6 overflow-auto">
           {renderPage()}
         </div>
 

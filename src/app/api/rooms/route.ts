@@ -26,7 +26,10 @@ export async function GET(request: NextRequest) {
         include: { type: true },
         skip,
         take: limit,
-        orderBy: { roomNumber: 'asc' },
+        orderBy: [
+          { floor: 'asc' },
+          { roomNumber: 'asc' },
+        ],
       }),
       db.room.count({ where }),
     ]);
