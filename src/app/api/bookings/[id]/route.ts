@@ -21,7 +21,7 @@ export async function GET(
       include: {
         customer: true,
         room: { include: { type: true } },
-        creator: { select: { id: true, name: true, email: true, role: true } },
+        creator: { select: { id: true, name: true, email: true, phone: true, role: true } },
         charges: true,
         payments: true,
         restaurantOrders: { include: { items: { include: { menuItem: true } } } },

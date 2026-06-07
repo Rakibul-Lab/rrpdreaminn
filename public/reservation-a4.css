@@ -184,6 +184,34 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8mm 12mm;
+  align-items: stretch;
+  min-height: 38mm;
+}
+
+.reservation-a4-sheet .rd-prepared-by {
+  display: flex;
+  flex-direction: column;
+  gap: 2mm;
+  padding-top: 2mm;
+  align-self: start;
+}
+
+.reservation-a4-sheet .rd-prepared-by-title {
+  margin: 0 0 1.5mm;
+  font-size: 10pt;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.reservation-a4-sheet .rd-prepared-by-details {
+  display: flex;
+  flex-direction: column;
+  gap: 1mm;
+  font-size: 9.5pt;
+}
+
+.reservation-a4-sheet .rd-prepared-by-details p {
+  margin: 0;
 }
 
 .reservation-a4-sheet .rd-signature-col {
@@ -192,6 +220,13 @@
   align-items: center;
   gap: 1.5mm;
   padding-top: 10mm;
+}
+
+.reservation-a4-sheet .rd-signature-col--guest {
+  justify-content: flex-end;
+  padding-top: 0;
+  padding-bottom: 2mm;
+  margin-top: auto;
 }
 
 .reservation-a4-sheet .rd-signature-label {

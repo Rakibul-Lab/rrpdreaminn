@@ -6,3 +6,9 @@ export function formatBdt(amount: number): string {
   const value = Number.isFinite(amount) ? amount : 0
   return `${TAKA_SYMBOL}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
 }
+
+/** ASCII-safe BDT label for jsPDF (Helvetica lacks the ৳ glyph). */
+export function formatBdtForPdf(amount: number): string {
+  const value = Number.isFinite(amount) ? amount : 0
+  return `BDT ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}

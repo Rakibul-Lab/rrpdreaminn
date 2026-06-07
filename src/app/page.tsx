@@ -5,13 +5,15 @@ import Image from 'next/image'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAuthStore, canAccessHotel, canAccessRestaurant, canAccessAdmin } from '@/lib/auth-store'
 import { CURRENT_PAGE_STORAGE_KEY } from '@/lib/session'
+import { cn } from '@/lib/utils'
 import { useAuthHydration } from '@/hooks/use-auth-hydration'
 import { api } from '@/lib/api-client'
 import {
   LayoutDashboard, FileText, CreditCard, BarChart3, Users, Settings,
   ScrollText, Package, LogOut, Hotel, UtensilsCrossed, Menu, X,
   Bed, CalendarCheck, UserCircle, SprayCan, ShoppingCart,
-  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell, Loader2, User
+  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell, Loader2, User,
+  ChevronLeft, ChevronRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -105,6 +107,13 @@ const navItems: NavItem[] = [
   // Account
   { key: 'profile', label: 'My Profile', icon: <User className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF', 'RESTAURANT_STAFF'], group: 'Account' },
 ]
+
+const SIDEBAR_COLLAPSED_KEY = 'erp_sidebar_collapsed'
+
+function readSidebarCollapsed(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+}
 
 function readSavedPageKey(): PageKey {
   if (typeof window === 'undefined') return 'hotel-dashboard'
@@ -333,7 +342,22 @@ function ERPApp() {
   const [pageRefreshNonce, setPageRefreshNonce] = useState(0)
   const [headerLoading, setHeaderLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [now, setNow] = useState<Date>(() => new Date())
+
+  useEffect(() => {
+    setSidebarCollapsed(readSidebarCollapsed())
+  }, [])
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? '1' : '0')
+      }
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000)
@@ -487,23 +511,29 @@ function ERPApp() {
     'Account': 'bg-muted',
   }
 
-  const renderNavItems = (items: NavItem[], group: string) => (
-    <div key={group} className="mb-3">
-      <p className={`text-[10px] font-bold uppercase tracking-widest px-3 mb-1.5 ${groupColors[group] || 'text-muted-foreground'}`}>
-        {group}
-      </p>
+  const renderNavItems = (items: NavItem[], group: string, collapsed = false) => (
+    <div key={group} className={cn('mb-3', collapsed && 'mb-1')}>
+      {!collapsed && (
+        <p className={`text-[10px] font-bold uppercase tracking-widest px-3 mb-1.5 ${groupColors[group] || 'text-muted-foreground'}`}>
+          {group}
+        </p>
+      )}
       {items.map((item) => (
         <button
-          key={item.key}
+          key={`${group}-${item.key}-${item.label}`}
+          type="button"
+          title={collapsed ? item.label : undefined}
           onClick={() => { handlePageNavigation(item.key); setSidebarOpen(false) }}
-          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-150 ${
+          className={cn(
+            'w-full flex items-center rounded-lg text-sm transition-all duration-150',
+            collapsed ? 'justify-center px-2 py-2.5' : 'gap-3 px-3 py-2',
             currentPage === item.key
               ? `${groupBgColors[group] || 'bg-amber-50'} font-semibold ${groupColors[group] || 'text-amber-700'}`
               : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-          }`}
+          )}
         >
           {item.icon}
-          {item.label}
+          {!collapsed && item.label}
         </button>
       ))}
     </div>
@@ -520,31 +550,56 @@ function ERPApp() {
       </div>
 
       {/* Sidebar - Desktop */}
-      <aside className="hidden lg:flex lg:w-60 lg:flex-col bg-card border-r border-border shadow-sm fixed inset-y-0 left-0 z-30">
-        <div className="p-4 border-b border-border">
-          <div className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-xl bg-background border border-border shadow-sm overflow-hidden">
+      <aside
+        className={cn(
+          'hidden lg:flex lg:flex-col bg-card border-r border-border shadow-sm fixed inset-y-0 left-0 z-30 transition-[width] duration-300 ease-in-out',
+          sidebarCollapsed ? 'lg:w-16' : 'lg:w-60'
+        )}
+      >
+        <div className={cn('border-b border-border', sidebarCollapsed ? 'p-2' : 'p-4')}>
+          <div className={cn('flex items-center', sidebarCollapsed ? 'flex-col gap-2' : 'gap-2.5')}>
+            <div className="h-9 w-9 rounded-xl bg-background border border-border shadow-sm overflow-hidden shrink-0">
               <Image src="/brand-logo.png" alt="RRP Dream Inn logo" width={36} height={36} className="h-full w-full object-cover" />
             </div>
-            <div>
-              <h1 className="font-bold text-foreground text-sm leading-tight">RRP Dream Inn</h1>
-              <p className="text-[11px] text-amber-600 font-medium">+ CloudView Restaurant</p>
-            </div>
+            {!sidebarCollapsed && (
+              <div className="flex-1 min-w-0">
+                <h1 className="font-bold text-foreground text-sm leading-tight">RRP Dream Inn</h1>
+                <p className="text-[11px] text-amber-600 font-medium">+ CloudView Restaurant</p>
+              </div>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={toggleSidebarCollapsed}
+              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </Button>
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-2.5 space-y-0.5">
-          {Object.entries(groupedNav).map(([group, items]) => renderNavItems(items, group))}
+        <nav className={cn('flex-1 overflow-y-auto space-y-0.5', sidebarCollapsed ? 'p-1.5' : 'p-2.5')}>
+          {Object.entries(groupedNav).map(([group, items], index) => (
+            <div key={group}>
+              {sidebarCollapsed && index > 0 && <Separator className="my-1.5" />}
+              {renderNavItems(items, group, sidebarCollapsed)}
+            </div>
+          ))}
         </nav>
 
-        <div className="p-3 border-t border-border bg-muted/50">
+        <div className={cn('border-t border-border bg-muted/50', sidebarCollapsed ? 'p-2' : 'p-3')}>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+            title="Logout"
+            className={cn(
+              'w-full text-muted-foreground hover:text-foreground',
+              sidebarCollapsed ? 'justify-center px-0' : 'justify-start gap-2'
+            )}
             onClick={handleLogout}
           >
-            <LogOut className="h-4 w-4" />
-            Logout
+            <LogOut className="h-4 w-4 shrink-0" />
+            {!sidebarCollapsed && 'Logout'}
           </Button>
         </div>
       </aside>
@@ -586,7 +641,12 @@ function ERPApp() {
       )}
 
       {/* Main Content */}
-      <main className="flex-1 lg:ml-60 flex flex-col min-h-screen">
+      <main
+        className={cn(
+          'flex-1 flex flex-col min-h-screen transition-[margin] duration-300 ease-in-out',
+          sidebarCollapsed ? 'lg:ml-16' : 'lg:ml-60'
+        )}
+      >
         {/* Top Bar */}
         <header className="sticky top-0 z-40 bg-background/90 backdrop-blur-md border-b border-border px-4 py-3 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-3">

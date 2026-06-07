@@ -6,9 +6,9 @@ import { Loader2, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export interface PosLiveSearchFieldProps<T> {
-  label: string
+  label?: string
   placeholder: string
-  selectedId: string
+  selectedId?: string
   selectedLabel?: string
   items: T[]
   isLoading?: boolean
@@ -17,10 +17,13 @@ export interface PosLiveSearchFieldProps<T> {
   getItemSublabel?: (item: T) => string
   filterItem: (item: T, query: string) => boolean
   onSelect: (item: T) => void
-  onClear: () => void
+  onClear?: () => void
   emptyMessage?: string
   noResultsMessage?: string
   maxResults?: number
+  /** Render dropdown as an overlay below the input (for compact headers). */
+  overlayDropdown?: boolean
+  inputClassName?: string
 }
 
 export function PosLiveSearchField<T>({
@@ -39,6 +42,8 @@ export function PosLiveSearchField<T>({
   emptyMessage = 'No options available',
   noResultsMessage = 'No matches found',
   maxResults = 15,
+  overlayDropdown = false,
+  inputClassName,
 }: PosLiveSearchFieldProps<T>) {
   const listboxId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -90,6 +95,7 @@ export function PosLiveSearchField<T>({
     setSearchQuery('')
     setOpen(false)
     setHighlightedIndex(-1)
+    inputRef.current?.blur()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -113,6 +119,7 @@ export function PosLiveSearchField<T>({
     if (e.key === 'Enter') {
       if (!canNavigate) return
       e.preventDefault()
+      e.stopPropagation()
       const index = highlightedIndex >= 0 ? highlightedIndex : 0
       const item = results[index]
       if (item) handleSelect(item)
@@ -127,11 +134,61 @@ export function PosLiveSearchField<T>({
     }
   }
 
+  const listContent = showList ? (
+    <ul
+      ref={listRef}
+      id={listboxId}
+      className={cn(
+        'z-50 max-h-52 overflow-auto rounded-md border bg-card shadow-md',
+        overlayDropdown && 'absolute left-0 right-0 top-full mt-1'
+      )}
+      role="listbox"
+    >
+      {items.length === 0 ? (
+        <li className="px-3 py-2 text-xs text-muted-foreground">{emptyMessage}</li>
+      ) : results.length === 0 ? (
+        <li className="px-3 py-2 text-xs text-muted-foreground">{noResultsMessage}</li>
+      ) : (
+        results.map((item, index) => (
+          <li
+            key={getItemId(item)}
+            id={`${listboxId}-option-${index}`}
+            role="option"
+            data-index={index}
+            aria-selected={highlightedIndex === index || selectedId === getItemId(item)}
+          >
+            <button
+              type="button"
+              className={cn(
+                'w-full px-3 py-2 text-left focus:outline-none',
+                highlightedIndex === index
+                  ? 'bg-amber-100 ring-1 ring-inset ring-amber-300'
+                  : 'hover:bg-amber-50 focus:bg-amber-50',
+                selectedId === getItemId(item) &&
+                  highlightedIndex !== index &&
+                  'bg-amber-50/80'
+              )}
+              onMouseEnter={() => setHighlightedIndex(index)}
+              onClick={() => handleSelect(item)}
+            >
+              <p className="text-sm font-medium text-foreground">{getItemLabel(item)}</p>
+              {getItemSublabel?.(item) && (
+                <p className="text-xs text-muted-foreground">{getItemSublabel(item)}</p>
+              )}
+            </button>
+          </li>
+        ))
+      )}
+    </ul>
+  ) : null
+
   return (
-    <div ref={containerRef} className="space-y-1.5">
-      <label htmlFor={`${listboxId}-input`} className="text-xs font-medium text-muted-foreground block">
-        {label}
-      </label>
+    <div ref={containerRef} className={cn('space-y-1.5', overlayDropdown && 'relative z-20')}>
+      {label && (
+        <label htmlFor={`${listboxId}-input`} className="text-xs font-medium text-muted-foreground block">
+          {label}
+        </label>
+      )}
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
@@ -154,7 +211,7 @@ export function PosLiveSearchField<T>({
           onFocus={() => setOpen(true)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="h-9 pl-8 pr-8 text-sm"
+          className={cn('h-9 pl-8 pr-8 text-sm', inputClassName)}
           autoComplete="off"
           disabled={isLoading}
         />
@@ -175,54 +232,12 @@ export function PosLiveSearchField<T>({
             <X className="h-3.5 w-3.5" />
           </button>
         )}
+        {overlayDropdown && listContent}
       </div>
 
-      {showList && (
-        <ul
-          ref={listRef}
-          id={listboxId}
-          className="z-50 max-h-44 overflow-auto rounded-md border bg-card shadow-md"
-          role="listbox"
-        >
-          {items.length === 0 ? (
-            <li className="px-3 py-2 text-xs text-muted-foreground">{emptyMessage}</li>
-          ) : results.length === 0 ? (
-            <li className="px-3 py-2 text-xs text-muted-foreground">{noResultsMessage}</li>
-          ) : (
-            results.map((item, index) => (
-              <li
-                key={getItemId(item)}
-                id={`${listboxId}-option-${index}`}
-                role="option"
-                data-index={index}
-                aria-selected={highlightedIndex === index || selectedId === getItemId(item)}
-              >
-                <button
-                  type="button"
-                  className={cn(
-                    'w-full px-3 py-2 text-left focus:outline-none',
-                    highlightedIndex === index
-                      ? 'bg-amber-100 ring-1 ring-inset ring-amber-300'
-                      : 'hover:bg-amber-50 focus:bg-amber-50',
-                    selectedId === getItemId(item) &&
-                      highlightedIndex !== index &&
-                      'bg-amber-50/80'
-                  )}
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  onClick={() => handleSelect(item)}
-                >
-                  <p className="text-sm font-medium text-foreground">{getItemLabel(item)}</p>
-                  {getItemSublabel?.(item) && (
-                    <p className="text-xs text-muted-foreground">{getItemSublabel(item)}</p>
-                  )}
-                </button>
-              </li>
-            ))
-          )}
-        </ul>
-      )}
+      {!overlayDropdown && listContent}
 
-      {selectedId && selectedLabel && (
+      {selectedId && selectedLabel && onClear && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50/60 px-2.5 py-1.5 text-xs">
           <span className="text-emerald-900 truncate">
             Selected: <strong>{selectedLabel}</strong>

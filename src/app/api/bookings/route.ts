@@ -43,12 +43,26 @@ export async function GET(request: NextRequest) {
       ];
     }
 
-    // Date range filter: bookings that overlap with the given range
+    // Date range filter: reservations created within the range (inclusive days)
     if (dateFrom || dateTo) {
-      const dateFilter: Record<string, unknown> = {};
-      if (dateFrom) dateFilter.gte = new Date(dateFrom);
-      if (dateTo) dateFilter.lte = new Date(dateTo);
-      where.checkIn = dateFilter;
+      const dateFilter: Prisma.DateTimeFilter = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        if (!Number.isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          dateFilter.gte = start;
+        }
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          dateFilter.lte = end;
+        }
+      }
+      if (dateFilter.gte || dateFilter.lte) {
+        where.createdAt = dateFilter;
+      }
     }
 
     const [bookings, total] = await Promise.all([
@@ -57,6 +71,7 @@ export async function GET(request: NextRequest) {
         include: {
           customer: true,
           room: { include: { type: true } },
+          creator: { select: { id: true, name: true, email: true } },
           payments: { select: { amount: true, paymentType: true } },
         },
         skip,

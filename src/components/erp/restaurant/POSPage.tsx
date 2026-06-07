@@ -1,13 +1,12 @@
 'use client'
 
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { useAuthStore } from '@/lib/auth-store'
 import { toast } from 'sonner'
 import {
-  Search,
   Plus,
   Minus,
   Trash2,
@@ -20,7 +19,6 @@ import {
   Leaf,
   ChefHat,
   Send,
-  X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -37,6 +35,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { PosLiveSearchField } from './PosLiveSearchField'
 
 // Types
@@ -150,8 +155,10 @@ export default function POSPage() {
   // State
   const [now, setNow] = useState(() => new Date())
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
-  const [searchQuery, setSearchQuery] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
+  const [quantityDialogItem, setQuantityDialogItem] = useState<MenuItem | null>(null)
+  const [quantityDialogQty, setQuantityDialogQty] = useState(1)
+  const quantityPanelRef = useRef<HTMLDivElement>(null)
   const [orderType, setOrderType] = useState<OrderType>('ROOM_SERVICE')
   const [tableId, setTableId] = useState<string>('')
   const [roomId, setRoomId] = useState<string>('')
@@ -229,35 +236,67 @@ export default function POSPage() {
     },
   })
 
-  // Filter menu items
+  // Filter menu items (category only — text search uses the dropdown)
   const filteredItems = useMemo(() => {
     let items = menuItems.filter((item) => item.available)
     if (selectedCategory !== 'all') {
       items = items.filter((item) => item.categoryId === selectedCategory)
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      items = items.filter(
-        (item) =>
-          item.name.toLowerCase().includes(q) ||
-          item.description?.toLowerCase().includes(q)
-      )
-    }
     return items
-  }, [menuItems, selectedCategory, searchQuery])
+  }, [menuItems, selectedCategory])
+
+  const availableMenuItems = useMemo(
+    () => menuItems.filter((item) => item.available),
+    [menuItems]
+  )
 
   // Cart operations
-  const addToCart = useCallback((menuItem: MenuItem) => {
+  const addToCartWithQuantity = useCallback((menuItem: MenuItem, quantity: number) => {
+    if (quantity < 1) return
     setCart((prev) => {
       const existing = prev.find((c) => c.menuItem.id === menuItem.id)
       if (existing) {
         return prev.map((c) =>
-          c.menuItem.id === menuItem.id ? { ...c, quantity: c.quantity + 1 } : c
+          c.menuItem.id === menuItem.id ? { ...c, quantity: c.quantity + quantity } : c
         )
       }
-      return [...prev, { menuItem, quantity: 1 }]
+      return [...prev, { menuItem, quantity }]
     })
   }, [])
+
+  const openQuantityDialog = useCallback((menuItem: MenuItem) => {
+    setQuantityDialogItem(menuItem)
+    setQuantityDialogQty(1)
+  }, [])
+
+  const closeQuantityDialog = useCallback(() => {
+    setQuantityDialogItem(null)
+    setQuantityDialogQty(1)
+  }, [])
+
+  const confirmQuantityDialog = useCallback(() => {
+    if (!quantityDialogItem || quantityDialogQty < 1) return
+    addToCartWithQuantity(quantityDialogItem, quantityDialogQty)
+    toast.success(`Added ${quantityDialogQty}× ${quantityDialogItem.name}`)
+    closeQuantityDialog()
+  }, [quantityDialogItem, quantityDialogQty, addToCartWithQuantity, closeQuantityDialog])
+
+  const handleQuantityDialogKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setQuantityDialogQty((q) => q + 1)
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setQuantityDialogQty((q) => Math.max(1, q - 1))
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        confirmQuantityDialog()
+      }
+    },
+    [confirmQuantityDialog]
+  )
 
   const updateQuantity = useCallback((menuItemId: string, delta: number) => {
     setCart((prev) =>
@@ -383,6 +422,15 @@ export default function POSPage() {
     )
   }, [])
 
+  const filterMenuItem = useCallback((item: MenuItem, query: string) => {
+    const q = query.toLowerCase()
+    return (
+      item.name.toLowerCase().includes(q) ||
+      (item.description?.toLowerCase().includes(q) ?? false) ||
+      item.category.name.toLowerCase().includes(q)
+    )
+  }, [])
+
   return (
     <div className="flex h-[calc(100dvh-8.5rem)] max-h-[calc(100dvh-8.5rem)] bg-muted overflow-hidden">
       {/* Left Panel - Menu */}
@@ -420,23 +468,23 @@ export default function POSPage() {
 
         {/* Search Bar */}
         <div className="px-4 py-3 bg-card border-b shrink-0">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder="Search menu items..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10 h-10 bg-muted border-border"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-muted-foreground"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
-          </div>
+          <PosLiveSearchField
+            placeholder="Search menu items… (↑↓ navigate, Enter to select)"
+            items={availableMenuItems}
+            isLoading={menuLoading}
+            getItemId={(item) => item.id}
+            getItemLabel={(item) => item.name}
+            getItemSublabel={(item) =>
+              `${item.category.name} · ৳${item.price.toFixed(0)}`
+            }
+            filterItem={filterMenuItem}
+            onSelect={openQuantityDialog}
+            emptyMessage="No menu items available"
+            noResultsMessage="No menu items match your search"
+            maxResults={20}
+            overlayDropdown
+            inputClassName="h-10 pl-10 bg-muted border-border"
+          />
         </div>
 
         {/* Category Tabs */}
@@ -483,75 +531,67 @@ export default function POSPage() {
         {/* Menu Items Grid */}
         <div className="flex-1 overflow-y-auto p-4 [scrollbar-width:none] hover:[scrollbar-width:thin] [&::-webkit-scrollbar]:w-0 hover:[&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-transparent hover:[&::-webkit-scrollbar-thumb]:bg-slate-300 hover:[&::-webkit-scrollbar-thumb]:rounded-full">
           {menuLoading ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {Array.from({ length: 12 }).map((_, i) => (
-                <Skeleton key={i} className="h-32 rounded-lg" />
+            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2">
+              {Array.from({ length: 16 }).map((_, i) => (
+                <Skeleton key={i} className="h-28 rounded-lg" />
               ))}
             </div>
           ) : filteredItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
               <UtensilsCrossed className="w-12 h-12 mb-3 opacity-30" />
               <p className="text-sm">No menu items found</p>
-              {searchQuery && (
-                <p className="text-xs mt-1">Try a different search term</p>
-              )}
             </div>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-2">
               {filteredItems.map((item) => {
                 const inCart = cart.find((c) => c.menuItem.id === item.id)
                 return (
                   <button
                     key={item.id}
-                    onClick={() => addToCart(item)}
-                    className={`text-left bg-card rounded-lg border-2 p-3 transition-all hover:shadow-md active:scale-[0.98] ${
+                    onClick={() => openQuantityDialog(item)}
+                    className={`text-left bg-card rounded-lg border-2 p-2 transition-all hover:shadow-md active:scale-[0.98] ${
                       inCart
                         ? 'border-amber-400 shadow-sm bg-amber-50/50'
                         : 'border-border hover:border-amber-200'
                     }`}
                   >
-                    <div className="mb-2 overflow-hidden rounded-md border border-border bg-muted">
+                    <div className="mb-1.5 overflow-hidden rounded-md border border-border bg-muted">
                       <MenuItemImage
                         item={item}
                         width={360}
                         height={220}
-                        className="h-24 w-full object-cover"
+                        className="h-14 w-full object-cover"
                       />
                     </div>
                     <div className="flex items-start justify-between gap-1">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 mb-1">
+                        <div className="flex items-center gap-1 mb-0.5">
                           <span
-                            className={`w-3 h-3 rounded-full border-2 shrink-0 ${
+                            className={`w-2.5 h-2.5 rounded-full border-2 shrink-0 ${
                               item.isVeg
                                 ? 'border-green-600 bg-green-500'
                                 : 'border-red-600 bg-red-500'
                             }`}
                             title={item.isVeg ? 'Vegetarian' : 'Non-Vegetarian'}
                           />
-                          <h3 className="font-semibold text-sm text-foreground truncate">
+                          <h3 className="font-semibold text-xs text-foreground truncate">
                             {item.name}
                           </h3>
                         </div>
-                        {item.description && (
-                          <p className="text-[11px] text-muted-foreground line-clamp-1 mb-1">
-                            {item.description}
-                          </p>
-                        )}
                       </div>
                       {inCart && (
-                        <Badge className="bg-amber-500 text-white text-[10px] shrink-0 h-5 min-w-5 flex items-center justify-center">
+                        <Badge className="bg-amber-500 text-white text-[9px] shrink-0 h-4 min-w-4 flex items-center justify-center px-1">
                           {inCart.quantity}
                         </Badge>
                       )}
                     </div>
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-amber-700 font-bold text-sm">
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-amber-700 font-bold text-xs">
                         ৳{item.price.toFixed(0)}
                       </span>
                       {item.preparationTime && (
-                        <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-                          <Clock className="w-2.5 h-2.5" />
+                        <span className="text-[9px] text-muted-foreground flex items-center gap-0.5">
+                          <Clock className="w-2 h-2" />
                           {item.preparationTime}m
                         </span>
                       )}
@@ -696,7 +736,7 @@ export default function POSPage() {
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                 <ShoppingBag className="w-10 h-10 mb-2" />
                 <p className="text-sm">No items in cart</p>
-                <p className="text-xs mt-1">Tap menu items to add</p>
+                <p className="text-xs mt-1">Tap menu items or search to add</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -851,6 +891,101 @@ export default function POSPage() {
           </div>
         </div>
       </div>
+
+      {/* Quantity dialog — opened when selecting from menu search */}
+      <Dialog
+        open={quantityDialogItem != null}
+        onOpenChange={(open) => {
+          if (!open) closeQuantityDialog()
+        }}
+      >
+        <DialogContent
+          className="max-w-sm"
+          onKeyDownCapture={handleQuantityDialogKeyDown}
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            quantityPanelRef.current?.focus()
+          }}
+        >
+          <div ref={quantityPanelRef} tabIndex={-1} className="outline-none space-y-4">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 pr-6">
+              <span
+                className={`w-3 h-3 rounded-full border-2 shrink-0 ${
+                  quantityDialogItem?.isVeg
+                    ? 'border-green-600 bg-green-500'
+                    : 'border-red-600 bg-red-500'
+                }`}
+              />
+              {quantityDialogItem?.name}
+            </DialogTitle>
+          </DialogHeader>
+
+          {quantityDialogItem && (
+            <>
+              <div className="overflow-hidden rounded-lg border border-border bg-muted">
+                <MenuItemImage
+                  item={quantityDialogItem}
+                  width={400}
+                  height={240}
+                  className="h-36 w-full object-cover"
+                />
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">{quantityDialogItem.category.name}</span>
+                <span className="font-semibold text-amber-700">
+                  ৳{quantityDialogItem.price.toFixed(0)} each
+                </span>
+              </div>
+              <div className="flex items-center justify-center gap-4 py-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-10 w-10"
+                  disabled={quantityDialogQty <= 1}
+                  onClick={() => setQuantityDialogQty((q) => Math.max(1, q - 1))}
+                >
+                  <Minus className="h-4 w-4" />
+                </Button>
+                <span className="min-w-[3rem] text-center text-2xl font-bold tabular-nums">
+                  {quantityDialogQty}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-10 w-10"
+                  onClick={() => setQuantityDialogQty((q) => q + 1)}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-center text-sm text-muted-foreground">
+                Line total:{' '}
+                <span className="font-semibold text-foreground">
+                  ৳{(quantityDialogItem.price * quantityDialogQty).toFixed(0)}
+                </span>
+              </p>
+            </>
+          )}
+
+          <DialogFooter className="gap-4">
+            <Button type="button" variant="outline" onClick={closeQuantityDialog}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={confirmQuantityDialog}
+              disabled={!quantityDialogItem || quantityDialogQty < 1}
+            >
+              Add to cart
+            </Button>
+          </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

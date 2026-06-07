@@ -56,6 +56,19 @@ export interface ReservationDocumentData {
   }
   room: { roomNumber: string; type: { name: string } }
   idDocuments?: { id: string; filePath: string; sortOrder: number }[]
+  creator?: {
+    id: string
+    name: string
+    email: string
+    phone?: string | null
+    role: string
+  } | null
+}
+
+const STAFF_ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Administrator',
+  HOTEL_STAFF: 'Hotel Staff',
+  RESTAURANT_STAFF: 'Restaurant Staff',
 }
 
 function idTypeLabel(type?: string | null) {
@@ -351,11 +364,36 @@ export function ReservationDocumentView({
 
         <footer className="rd-document-footer">
           <div className="rd-signatures">
-            <div className="rd-signature-col">
-              <div className="rd-signature-line" />
-              <p className="rd-signature-label">Check in by:</p>
+            <div className="rd-prepared-by">
+              <p className="rd-prepared-by-title">Prepared by:</p>
+              {reservation.creator ? (
+                <div className="rd-prepared-by-details">
+                  <p>
+                    <span className="rd-label">Name:</span>{' '}
+                    <span className="rd-muted">{reservation.creator.name}</span>
+                  </p>
+                  {reservation.creator.phone ? (
+                    <p>
+                      <span className="rd-label">Phone:</span>{' '}
+                      <span className="rd-muted">{reservation.creator.phone}</span>
+                    </p>
+                  ) : null}
+                  <p>
+                    <span className="rd-label">Email:</span>{' '}
+                    <span className="rd-muted">{reservation.creator.email}</span>
+                  </p>
+                  <p>
+                    <span className="rd-label">Role:</span>{' '}
+                    <span className="rd-muted">
+                      {STAFF_ROLE_LABELS[reservation.creator.role] || reservation.creator.role}
+                    </span>
+                  </p>
+                </div>
+              ) : (
+                <p className="rd-muted">—</p>
+              )}
             </div>
-            <div className="rd-signature-col">
+            <div className="rd-signature-col rd-signature-col--guest">
               <div className="rd-signature-line" />
               <p className="rd-signature-label">Guest:</p>
             </div>

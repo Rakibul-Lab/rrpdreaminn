@@ -198,6 +198,54 @@ function displayDatetime(value: string | Date, timeHHmm: string): Date {
   return date
 }
 
+/** Format stored datetime; applies hotel policy time only for legacy date-only (midnight) values. */
+export function formatBookingDatetime(
+  value: string | Date,
+  fallbackTimeHHmm?: string,
+  compact = false
+): string {
+  const date = typeof value === 'string' ? new Date(value) : value
+  if (Number.isNaN(date.getTime())) return '—'
+  const d =
+    fallbackTimeHHmm && isDateOnlyBookingDatetime(date)
+      ? applyHotelTimeToDate(startOfDay(date), fallbackTimeHHmm)
+      : date
+  return format(d, compact ? 'dd/MM/yy · h:mm a' : 'MMM dd, yyyy · h:mm a')
+}
+
+export type BookingListDatetimeFields = {
+  checkIn: string | Date
+  checkOut: string | Date
+  actualCheckIn?: string | Date | null
+  actualCheckOut?: string | Date | null
+  status: string
+}
+
+export function formatListBookingCheckIn(
+  booking: BookingListDatetimeFields,
+  times: HotelTimes = DEFAULT_HOTEL_TIMES,
+  compact = false
+): string {
+  if (
+    booking.actualCheckIn &&
+    (booking.status === 'CHECKED_IN' || booking.status === 'CHECKED_OUT')
+  ) {
+    return formatBookingDatetime(booking.actualCheckIn, undefined, compact)
+  }
+  return formatBookingDatetime(booking.checkIn, times.checkInTime, compact)
+}
+
+export function formatListBookingCheckOut(
+  booking: BookingListDatetimeFields,
+  times: HotelTimes = DEFAULT_HOTEL_TIMES,
+  compact = false
+): string {
+  if (booking.actualCheckOut && booking.status === 'CHECKED_OUT') {
+    return formatBookingDatetime(booking.actualCheckOut, undefined, compact)
+  }
+  return formatBookingDatetime(booking.checkOut, times.checkOutTime, compact)
+}
+
 export function formatBookingCheckIn(
   value: string | Date,
   times: HotelTimes = DEFAULT_HOTEL_TIMES

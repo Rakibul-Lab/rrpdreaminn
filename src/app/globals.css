@@ -271,9 +271,87 @@
   top: 0;
   z-index: 50;
   background-color: var(--muted);
+  white-space: nowrap;
   box-shadow:
     0 1px 0 var(--border),
     0 4px 6px -2px rgb(0 0 0 / 0.08);
+}
+
+/* Compact reservations list — fits main content without horizontal scroll */
+.bookings-list-table {
+  table-layout: fixed;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.bookings-list-table thead th {
+  font-size: 13px;
+}
+
+.bookings-list-table thead th,
+.bookings-list-table tbody td {
+  padding: 8px 8px;
+  vertical-align: middle;
+}
+
+.bookings-list-table .bl-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookings-list-table .col-guest { width: 14%; }
+.bookings-list-table .col-room { width: 7%; }
+.bookings-list-table .col-checkin { width: 11%; }
+.bookings-list-table .col-checkout { width: 11%; }
+.bookings-list-table .col-status { width: 9%; }
+.bookings-list-table .col-reserved { width: 12%; }
+.bookings-list-table .col-vat { width: 9%; }
+.bookings-list-table .col-total { width: 9%; }
+.bookings-list-table .col-due { width: 8%; }
+.bookings-list-table .col-actions {
+  width: 148px;
+  max-width: 148px;
+  padding-left: 4px;
+  padding-right: 8px;
+}
+
+.bookings-list-table .col-checkin,
+.bookings-list-table .col-checkout {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.bookings-list-table .bl-secondary {
+  font-size: 12px;
+}
+
+.bookings-list-table .col-actions .bl-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  width: 100%;
+}
+
+.bookings-list-table thead th.col-actions,
+.bookings-list-table tbody td.col-actions {
+  text-align: right;
+}
+
+.bookings-list-table .col-vat,
+.bookings-list-table .col-total,
+.bookings-list-table .col-due {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.bookings-list-table thead th.col-vat,
+.bookings-list-table thead th.col-total,
+.bookings-list-table thead th.col-due {
+  text-align: right;
 }
 
 /* Print — show only .print-container content */

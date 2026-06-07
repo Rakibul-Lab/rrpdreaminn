@@ -1,0 +1,129 @@
+import {
+  endOfDay,
+  endOfMonth,
+  endOfWeek,
+  endOfYear,
+  format,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+  startOfYear,
+  subDays,
+} from 'date-fns'
+
+export type BookingDatePreset =
+  | 'all'
+  | 'today'
+  | 'yesterday'
+  | 'this_week'
+  | 'this_month'
+  | 'this_year'
+  | 'custom'
+
+export const BOOKING_DATE_PRESET_OPTIONS: { value: BookingDatePreset; label: string }[] = [
+  { value: 'all', label: 'All dates' },
+  { value: 'today', label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'this_week', label: 'This week' },
+  { value: 'this_month', label: 'This month' },
+  { value: 'this_year', label: 'This year' },
+  { value: 'custom', label: 'Custom range' },
+]
+
+export function resolveBookingDateRange(
+  preset: BookingDatePreset,
+  customFrom?: string,
+  customTo?: string,
+  now: Date = new Date()
+): { dateFrom?: string; dateTo?: string } {
+  if (preset === 'all') return {}
+
+  const toDateStr = (d: Date) => format(d, 'yyyy-MM-dd')
+
+  switch (preset) {
+    case 'today':
+      return { dateFrom: toDateStr(startOfDay(now)), dateTo: toDateStr(endOfDay(now)) }
+    case 'yesterday': {
+      const day = subDays(now, 1)
+      return { dateFrom: toDateStr(startOfDay(day)), dateTo: toDateStr(endOfDay(day)) }
+    }
+    case 'this_week':
+      return {
+        dateFrom: toDateStr(startOfWeek(now, { weekStartsOn: 1 })),
+        dateTo: toDateStr(endOfWeek(now, { weekStartsOn: 1 })),
+      }
+    case 'this_month':
+      return { dateFrom: toDateStr(startOfMonth(now)), dateTo: toDateStr(endOfMonth(now)) }
+    case 'this_year':
+      return { dateFrom: toDateStr(startOfYear(now)), dateTo: toDateStr(endOfYear(now)) }
+    case 'custom':
+      if (!customFrom && !customTo) return {}
+      return {
+        ...(customFrom ? { dateFrom: customFrom } : {}),
+        ...(customTo ? { dateTo: customTo } : {}),
+      }
+    default:
+      return {}
+  }
+}
+
+function formatFilterDate(value: string): string {
+  const parsed = new Date(`${value.trim()}T12:00:00`)
+  if (Number.isNaN(parsed.getTime())) return value
+  return format(parsed, 'dd MMM yyyy')
+}
+
+export function formatBookingDateFilterLabel(
+  preset: BookingDatePreset,
+  customFrom?: string,
+  customTo?: string
+): string {
+  if (preset === 'all') return 'All dates'
+
+  if (preset === 'custom') {
+    if (customFrom || customTo) {
+      const from = customFrom ? formatFilterDate(customFrom) : '…'
+      const to = customTo ? formatFilterDate(customTo) : '…'
+      return `Custom range (${from} to ${to})`
+    }
+    return 'Custom range'
+  }
+
+  return BOOKING_DATE_PRESET_OPTIONS.find((o) => o.value === preset)?.label ?? 'All dates'
+}
+
+const BOOKING_STATUS_FILTER_LABELS: Record<string, string> = {
+  RESERVED: 'Reserved',
+  CHECKED_IN: 'Checked In',
+  CHECKED_OUT: 'Checked Out',
+  CANCELLED: 'Cancelled',
+}
+
+export function formatBookingStatusFilterLabel(status: string): string {
+  if (!status || status === 'all') return 'All status'
+  return BOOKING_STATUS_FILTER_LABELS[status] ?? status.replace(/_/g, ' ')
+}
+
+export type BookingsExportFilterLabels = {
+  date: string
+  status: string
+  search: string
+}
+
+export function buildBookingsExportFilterLabels(input: {
+  datePreset: BookingDatePreset
+  customDateFrom?: string
+  customDateTo?: string
+  status?: string
+  search?: string
+}): BookingsExportFilterLabels {
+  return {
+    date: formatBookingDateFilterLabel(
+      input.datePreset,
+      input.customDateFrom,
+      input.customDateTo
+    ),
+    status: formatBookingStatusFilterLabel(input.status ?? 'all'),
+    search: input.search?.trim() ? input.search.trim() : '—',
+  }
+}

@@ -20,7 +20,7 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { Plus, Search, LogIn, LogOut, XCircle, Receipt, FileText, CalendarRange } from 'lucide-react';
+import { Plus, Search, LogIn, LogOut, XCircle, Receipt, FileText, CalendarRange, FileSpreadsheet, FileDown, Loader2 } from 'lucide-react';
 import { AdjustStayDialog } from './AdjustStayDialog';
 import { openNewReservationTab } from '@/lib/reservation-navigation';
 import { openCheckoutTab } from '@/lib/checkout-navigation';
@@ -31,9 +31,23 @@ import { PAYMENT_METHOD_OPTIONS_WITH_PAYMENT } from '@/lib/payment-method';
 import { computeRefundFromInput } from '@/lib/booking-totals';
 import { Switch } from '@/components/ui/switch';
 import { useHotelTimes } from '@/hooks/use-hotel-times';
+import { useAuthStore } from '@/lib/auth-store';
+import { formatListBookingCheckIn, formatListBookingCheckOut } from '@/lib/hotel-times';
+import {
+  BOOKING_DATE_PRESET_OPTIONS,
+  buildBookingsExportFilterLabels,
+  resolveBookingDateRange,
+  type BookingDatePreset,
+} from '@/lib/booking-date-filter';
+import {
+  buildBookingsExportQuery,
+  downloadBookingsExcel,
+  downloadBookingsPdf,
+} from '@/lib/bookings-export';
 
 interface Booking {
   id: string;
+  confirmationNumber?: string | null;
   customerId: string;
   roomId: string;
   status: 'RESERVED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'CANCELLED';
@@ -51,8 +65,10 @@ interface Booking {
   vatAmount?: number;
   totalWithVat?: number;
   notes?: string | null;
+  createdAt?: string;
   customer: { id: string; name: string; phone: string; email?: string };
   room: { id: string; roomNumber: string; type: { name: string; basePrice: number } };
+  creator?: { id: string; name: string; email: string } | null;
 }
 
 interface CancelPreview {
@@ -70,8 +86,12 @@ interface CancelPreview {
 
 export function BookingsPage() {
   const queryClient = useQueryClient();
-  const { formatCheckIn, formatCheckOut } = useHotelTimes();
+  const user = useAuthStore((s) => s.user);
+  const { times, formatCheckIn, formatCheckOut } = useHotelTimes();
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [datePreset, setDatePreset] = useState<BookingDatePreset>('all');
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -91,6 +111,7 @@ export function BookingsPage() {
   const [cancelReason, setCancelReason] = useState('');
   const [adjustStayDialogOpen, setAdjustStayDialogOpen] = useState(false);
   const [adjustStayBookingId, setAdjustStayBookingId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setSearchQuery(searchInput.trim());
@@ -99,15 +120,22 @@ export function BookingsPage() {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
+  const dateRange = useMemo(
+    () => resolveBookingDateRange(datePreset, customDateFrom, customDateTo),
+    [datePreset, customDateFrom, customDateTo]
+  );
+
   const buildQuery = () => {
     const params: string[] = [`page=${page}`, `limit=${pageSize}`];
     if (statusFilter !== 'all') params.push(`status=${statusFilter}`);
     if (searchQuery) params.push(`search=${encodeURIComponent(searchQuery)}`);
+    if (dateRange.dateFrom) params.push(`dateFrom=${dateRange.dateFrom}`);
+    if (dateRange.dateTo) params.push(`dateTo=${dateRange.dateTo}`);
     return `/bookings?${params.join('&')}`;
   };
 
   const { data: bookingsData, isLoading } = useQuery({
-    queryKey: ['bookings', statusFilter, page, pageSize, searchQuery],
+    queryKey: ['bookings', statusFilter, datePreset, customDateFrom, customDateTo, page, pageSize, searchQuery],
     queryFn: () => api.get<{ success: boolean; data: Booking[]; meta: { total: number; page: number; totalPages: number } }>(buildQuery()),
   });
 
@@ -227,6 +255,72 @@ export function BookingsPage() {
     setCancelDialogOpen(true);
   };
 
+  const buildExportMeta = () => ({
+    filters: buildBookingsExportFilterLabels({
+      datePreset,
+      customDateFrom,
+      customDateTo,
+      status: statusFilter,
+      search: searchQuery,
+    }),
+    exportedAt: new Date(),
+    generatedBy: user
+      ? { name: user.name, email: user.email, role: user.role }
+      : undefined,
+  });
+
+  const fetchBookingsForExport = async () => {
+    const url = buildBookingsExportQuery({
+      status: statusFilter,
+      search: searchQuery,
+      dateFrom: dateRange.dateFrom,
+      dateTo: dateRange.dateTo,
+    });
+    const res = await api.get<{ success: boolean; data: Booking[]; meta?: { total: number } }>(url);
+    if (!res?.success) {
+      throw new Error('Failed to fetch reservations for export');
+    }
+    return res.data ?? [];
+  };
+
+  const handleExportExcel = async () => {
+    setExporting('excel');
+    const toastId = toast.loading('Preparing Excel export…');
+    try {
+      const rows = await fetchBookingsForExport();
+      if (!rows.length) {
+        toast.error('No reservations match the current filters', { id: toastId });
+        return;
+      }
+      await downloadBookingsExcel(rows, times, buildExportMeta());
+      toast.success(`Exported ${rows.length} reservation(s) to Excel`, { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    setExporting('pdf');
+    const toastId = toast.loading('Preparing PDF export…');
+    try {
+      const rows = await fetchBookingsForExport();
+      if (!rows.length) {
+        toast.error('No reservations match the current filters', { id: toastId });
+        return;
+      }
+      await downloadBookingsPdf(rows, times, buildExportMeta());
+      toast.success(`Exported ${rows.length} reservation(s) to PDF`, { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -235,15 +329,41 @@ export function BookingsPage() {
           <h2 className="text-xl font-semibold">Reservations</h2>
           <p className="text-sm text-muted-foreground">{totalBookings} total reservations</p>
         </div>
-        <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={openNewReservationTab}>
-          <Plus className="w-4 h-4 mr-2" />
-          New Reservation
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => void handleExportExcel()}
+            disabled={!!exporting || isLoading}
+          >
+            {exporting === 'excel' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+            )}
+            Export Excel
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleExportPdf()}
+            disabled={!!exporting || isLoading}
+          >
+            {exporting === 'pdf' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileDown className="w-4 h-4 mr-2" />
+            )}
+            Export PDF
+          </Button>
+          <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={openNewReservationTab}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Reservation
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 max-w-xs">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             placeholder="Search guest, phone, or room..."
@@ -264,6 +384,60 @@ export function BookingsPage() {
             <SelectItem value="CANCELLED">Cancelled</SelectItem>
           </SelectContent>
         </Select>
+        <Select
+          value={datePreset}
+          onValueChange={(v) => {
+            setDatePreset(v as BookingDatePreset);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="w-44">
+            <CalendarRange className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+            <SelectValue placeholder="Date" />
+          </SelectTrigger>
+          <SelectContent>
+            {BOOKING_DATE_PRESET_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {datePreset === 'custom' && (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="booking-date-from" className="text-xs text-muted-foreground">
+                From
+              </Label>
+              <Input
+                id="booking-date-from"
+                type="date"
+                value={customDateFrom}
+                onChange={(e) => {
+                  setCustomDateFrom(e.target.value);
+                  setPage(1);
+                }}
+                className="w-40"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="booking-date-to" className="text-xs text-muted-foreground">
+                To
+              </Label>
+              <Input
+                id="booking-date-to"
+                type="date"
+                value={customDateTo}
+                min={customDateFrom || undefined}
+                onChange={(e) => {
+                  setCustomDateTo(e.target.value);
+                  setPage(1);
+                }}
+                className="w-40"
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Bookings Table */}
@@ -277,59 +451,80 @@ export function BookingsPage() {
         </Card>
       ) : (
         <div className="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
-            <table className="bookings-sticky-table w-full min-w-[900px] text-sm">
+            <table className="bookings-sticky-table bookings-list-table w-full">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="p-3 text-left font-medium">Guest</th>
-                  <th className="p-3 text-left font-medium">Room</th>
-                  <th className="p-3 text-left font-medium">Check-in</th>
-                  <th className="p-3 text-left font-medium">Check-out</th>
-                  <th className="p-3 text-left font-medium">Status</th>
-                  <th className="p-3 text-right font-medium">Total (incl. VAT)</th>
-                  <th className="p-3 text-right font-medium">Due (incl. VAT)</th>
-                  <th className="p-3 text-left font-medium">Actions</th>
+                  <th className="col-guest text-left font-medium">Guest</th>
+                  <th className="col-room text-left font-medium">Room</th>
+                  <th className="col-checkin text-left font-medium">Check-in</th>
+                  <th className="col-checkout text-left font-medium">Check-out</th>
+                  <th className="col-status text-left font-medium">Status</th>
+                  <th className="col-reserved text-left font-medium">Reserved by</th>
+                  <th className="col-vat text-right font-medium" title="VAT amount and rate">VAT</th>
+                  <th className="col-total text-right font-medium" title="Total including VAT">Total</th>
+                  <th className="col-due text-right font-medium" title="Balance due including VAT">Due</th>
+                  <th className="col-actions text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-background">
               {bookings.map((booking) => (
                 <tr key={booking.id} className="border-b border-border/60 hover:bg-muted/40">
-                  <td className="p-3">
-                    <div>
-                      <p className="font-medium">{booking.customer?.name}</p>
-                      <p className="text-xs text-muted-foreground">{booking.customer?.phone}</p>
-                    </div>
-                  </td>
-                  <td className="p-3">
-                    <div>
-                      <p className="font-medium">{booking.room?.roomNumber}</p>
-                      <p className="text-xs text-muted-foreground">{booking.room?.type?.name}</p>
-                    </div>
-                  </td>
-                  <td className="p-3 text-xs">{formatCheckIn(booking.checkIn)}</td>
-                  <td className="p-3 text-xs">{formatCheckOut(booking.checkOut)}</td>
-                  <td className="p-3"><StatusBadge status={booking.status} /></td>
-                  <td className="p-3 text-right">
-                    <p className="font-medium">
-                      {formatBdt(booking.totalWithVat ?? booking.totalRoomCharge)}
+                  <td className="col-guest">
+                    <p className="bl-truncate font-medium" title={booking.customer?.name}>
+                      {booking.customer?.name}
                     </p>
-                    {booking.vatAmount != null && booking.vatPercent != null && (
-                      <p className="text-[10px] text-muted-foreground">
-                        VAT {booking.vatPercent}%: {formatBdt(booking.vatAmount)}
-                      </p>
+                    <p className="bl-truncate bl-secondary text-muted-foreground" title={booking.customer?.phone}>
+                      {booking.customer?.phone}
+                    </p>
+                  </td>
+                  <td className="col-room">
+                    <p className="bl-truncate font-medium" title={booking.room?.roomNumber}>
+                      {booking.room?.roomNumber}
+                    </p>
+                    <p className="bl-truncate bl-secondary text-muted-foreground" title={booking.room?.type?.name}>
+                      {booking.room?.type?.name}
+                    </p>
+                  </td>
+                  <td className="col-checkin" title={formatListBookingCheckIn(booking, times)}>
+                    {formatListBookingCheckIn(booking, times, true)}
+                  </td>
+                  <td className="col-checkout" title={formatListBookingCheckOut(booking, times)}>
+                    {formatListBookingCheckOut(booking, times, true)}
+                  </td>
+                  <td className="col-status">
+                    <StatusBadge status={booking.status} className="text-xs px-2 py-0.5 h-6 font-normal" />
+                  </td>
+                  <td className="col-reserved">
+                    <p className="bl-truncate font-medium" title={booking.creator?.name || undefined}>
+                      {booking.creator?.name || '—'}
+                    </p>
+                  </td>
+                  <td className="col-vat">
+                    {(booking.vatAmount ?? 0) > 0 ? (
+                      <>
+                        <p className="font-medium">{formatBdt(booking.vatAmount ?? 0)}</p>
+                        <p className="bl-secondary text-muted-foreground">{booking.vatPercent ?? 15}%</p>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">Off</span>
                     )}
                   </td>
-                  <td className="p-3 text-right">
+                  <td className="col-total font-medium">
+                    {formatBdt(booking.totalWithVat ?? booking.totalRoomCharge)}
+                  </td>
+                  <td className="col-due text-right">
                     <span className={booking.dueAmount > 0 ? 'text-red-600 font-medium' : 'text-emerald-600'}>
                       {formatBdt(booking.dueAmount)}
                     </span>
                   </td>
-                  <td className="p-3">
-                    <div className="flex items-center gap-1">
+                  <td className="col-actions">
+                    <div className="bl-actions">
                       {booking.status === 'RESERVED' && (
                         <Button
                           variant="outline"
-                          size="sm"
-                          className="h-7 text-xs border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                          title="Check-in"
                           onClick={() => {
                             setCheckInBookingId(booking.id);
                             setCheckInPayment('0');
@@ -338,41 +533,39 @@ export function BookingsPage() {
                           }}
                           disabled={checkInMutation.isPending}
                         >
-                          <LogIn className="w-3 h-3 mr-1" />
-                          Check-in
+                          <LogIn className="w-3 h-3" />
                         </Button>
                       )}
                       {booking.status === 'CHECKED_IN' && (
                         <>
                           <Button
                             variant="outline"
-                            size="sm"
-                            className="h-7 text-xs border-border text-muted-foreground hover:bg-muted"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            title="Check-out"
                             onClick={() => openCheckoutTab(booking.id)}
                           >
-                            <LogOut className="w-3 h-3 mr-1" />
-                            Check-out
+                            <LogOut className="w-3 h-3" />
                           </Button>
                           <Button
                             variant="outline"
-                            size="sm"
-                            className="h-7 text-xs border-amber-500 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 border-amber-500 text-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                            title="Adjust stay"
                             onClick={() => {
                               setAdjustStayBookingId(booking.id);
                               setAdjustStayDialogOpen(true);
                             }}
-                            title="Adjust nights, early checkout fee, and room due"
                           >
-                            <CalendarRange className="w-3 h-3 mr-1" />
-                            Adjust stay
+                            <CalendarRange className="w-3 h-3" />
                           </Button>
                         </>
                       )}
                       {booking.status === 'RESERVED' && (
                         <Button
                           variant="ghost"
-                          size="sm"
-                          className="h-7 text-xs text-red-500 hover:text-red-600"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 text-red-500 hover:text-red-600"
                           onClick={() => openCancelDialog(booking.id)}
                           disabled={cancelMutation.isPending}
                           title="Cancel reservation"
@@ -382,24 +575,23 @@ export function BookingsPage() {
                       )}
                       <Button
                         variant="outline"
-                        size="sm"
-                        className="h-7 text-xs border-sky-500 text-sky-700 hover:bg-sky-50"
+                        size="icon"
+                        className="h-7 w-7 shrink-0 border-sky-500 text-sky-700 hover:bg-sky-50"
+                        title="Reservation document"
                         onClick={() => window.open(`/reservation/${booking.id}`, '_blank', 'noopener,noreferrer')}
-                        title="Print / download reservation PDF"
                       >
-                        <FileText className="w-3 h-3 mr-1" />
-                        Reservation
+                        <FileText className="w-3 h-3" />
                       </Button>
                       {(booking.status === 'CHECKED_OUT' || booking.status === 'CHECKED_IN') && (
                         <Button
                           variant="outline"
-                          size="sm"
-                          className="h-7 text-xs border-amber-500 text-amber-700 hover:bg-amber-50"
+                          size="icon"
+                          className="h-7 w-7 shrink-0 border-amber-500 text-amber-700 hover:bg-amber-50"
+                          title="Generate invoice"
                           onClick={() => generateInvoiceMutation.mutate(booking.id)}
                           disabled={generateInvoiceMutation.isPending}
                         >
-                          <Receipt className="w-3 h-3 mr-1" />
-                          Invoice
+                          <Receipt className="w-3 h-3" />
                         </Button>
                       )}
                     </div>
@@ -408,7 +600,7 @@ export function BookingsPage() {
               ))}
               {bookings.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-muted-foreground">No reservations found</td>
+                  <td colSpan={10} className="p-8 text-center text-muted-foreground">No reservations found</td>
                 </tr>
               )}
               </tbody>
@@ -417,7 +609,7 @@ export function BookingsPage() {
             <p className="text-sm text-muted-foreground">
               {totalBookings === 0
                 ? 'No results'
-                : `Showing ${rangeStart}â€“${rangeEnd} of ${totalBookings}`}
+                : `Showing ${rangeStart}–${rangeEnd} of ${totalBookings}`}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <Select
@@ -452,7 +644,7 @@ export function BookingsPage() {
                       key={`ellipsis-${index}`}
                       className="flex h-8 min-w-8 items-center justify-center px-1 text-sm text-muted-foreground"
                     >
-                      â€¦
+                      …
                     </span>
                   ) : (
                     <Button
@@ -636,7 +828,7 @@ export function BookingsPage() {
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Reservation dates</span>
                           <span className="font-medium text-right text-xs">
-                            {formatCheckIn(cancelPreview.checkIn)} â†’{' '}
+                            {formatCheckIn(cancelPreview.checkIn)} →{' '}
                             {formatCheckOut(cancelPreview.checkOut)}
                           </span>
                         </div>
@@ -668,7 +860,7 @@ export function BookingsPage() {
               <div>
                 <p className="text-sm font-medium text-foreground">Issue refund</p>
                 <p className="text-xs text-muted-foreground">
-                  Off by default â€” no refund unless you turn this on
+                  Off by default — no refund unless you turn this on
                 </p>
               </div>
               <Switch
@@ -762,7 +954,7 @@ export function BookingsPage() {
 
             {refundEnabled && maxRefundable <= 0 && (
               <p className="text-xs text-muted-foreground">
-                No payments on this reservation â€” refund is not available.
+                No payments on this reservation — refund is not available.
               </p>
             )}
           </div>
@@ -790,7 +982,7 @@ export function BookingsPage() {
                 });
               }}
             >
-              {cancelMutation.isPending ? 'Cancellingâ€¦' : 'Confirm cancel'}
+              {cancelMutation.isPending ? 'Cancelling…' : 'Confirm cancel'}
             </Button>
           </DialogFooter>
         </DialogContent>
