@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-node_modules
+# dependencies (root only — .next/standalone/node_modules can be committed for cPanel deploy)
+/node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -14,7 +14,8 @@ node_modules
 /coverage
 
 # next.js
-/.next/
+.next/cache
+.next/dev
 /out/
 
 
