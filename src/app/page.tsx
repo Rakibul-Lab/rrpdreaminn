@@ -12,11 +12,12 @@ import {
   LayoutDashboard, FileText, CreditCard, BarChart3, Users, Settings,
   ScrollText, Package, LogOut, Hotel, UtensilsCrossed, Menu, X,
   Bed, CalendarCheck, UserCircle, SprayCan, ShoppingCart,
-  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell, Loader2, User,
-  ChevronLeft, ChevronRight,
+  ChefHat, Grid3X3, ClipboardList, DoorOpen, Tag, Bell, Loader2, User, UserRound,
+  ChevronLeft, ChevronRight, Building2, Landmark,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { EmailInput } from '@/components/ui/email-input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -38,14 +39,17 @@ import { RoomsPage } from '@/components/erp/hotel/RoomsPage'
 import { RoomTypesPage } from '@/components/erp/hotel/RoomTypesPage'
 import { BookingsPage } from '@/components/erp/hotel/BookingsPage'
 import { CustomersPage } from '@/components/erp/hotel/CustomersPage'
+import { CompanyLedgerPage } from '@/components/erp/hotel/CompanyLedgerPage'
 import { HousekeepingPage } from '@/components/erp/hotel/HousekeepingPage'
 import POSPage from '@/components/erp/restaurant/POSPage'
 import MenuPage from '@/components/erp/restaurant/MenuPage'
 import OrdersPage from '@/components/erp/restaurant/OrdersPage'
 import KitchenPage from '@/components/erp/restaurant/KitchenPage'
 import TablesPage from '@/components/erp/restaurant/TablesPage'
+import WaitersPage from '@/components/erp/restaurant/WaitersPage'
 import InvoicesPage from '@/components/erp/billing/InvoicesPage'
 import PaymentsPage from '@/components/erp/billing/PaymentsPage'
+import DepositsPage from '@/components/erp/billing/DepositsPage'
 import ReportsPage from '@/components/erp/reports/ReportsPage'
 import AdminDashboard from '@/components/erp/admin/AdminDashboard'
 import SettingsPage from '@/components/erp/admin/SettingsPage'
@@ -55,9 +59,9 @@ import InventoryPage from '@/components/erp/admin/InventoryPage'
 import { ProfilePage } from '@/components/erp/auth/ProfilePage'
 
 type PageKey = 
-  | 'hotel-dashboard' | 'rooms' | 'room-types' | 'bookings' | 'customers' | 'housekeeping'
-  | 'pos' | 'menu' | 'orders' | 'kitchen' | 'tables'
-  | 'invoices' | 'payments' | 'reports'
+  | 'hotel-dashboard' | 'rooms' | 'room-types' | 'bookings' | 'customers' | 'company-ledger' | 'housekeeping'
+  | 'pos' | 'menu' | 'orders' | 'kitchen' | 'tables' | 'waiters'
+  | 'invoices' | 'payments' | 'deposits' | 'reports'
   | 'admin-dashboard' | 'users' | 'settings' | 'logs' | 'inventory'
   | 'profile'
 
@@ -85,6 +89,7 @@ const navItems: NavItem[] = [
   { key: 'room-types', label: 'Room Types', icon: <Tag className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'bookings', label: 'Reservations', icon: <CalendarCheck className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'customers', label: 'Guests', icon: <UserCircle className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
+  { key: 'company-ledger', label: 'Company Ledger', icon: <Building2 className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   { key: 'housekeeping', label: 'Housekeeping', icon: <SprayCan className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'RRP Dream Inn' },
   // Restaurant - CloudView
   { key: 'hotel-dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4" />, allowedRoles: ['RESTAURANT_STAFF'], group: 'CloudView' },
@@ -93,9 +98,11 @@ const navItems: NavItem[] = [
   { key: 'orders', label: 'Orders', icon: <ClipboardList className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
   { key: 'kitchen', label: 'Kitchen Display', icon: <ChefHat className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF', 'HOTEL_STAFF'], group: 'CloudView' },
   { key: 'tables', label: 'Tables', icon: <Grid3X3 className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
+  { key: 'waiters', label: 'Waiters', icon: <UserRound className="h-4 w-4" />, allowedRoles: ['ADMIN', 'RESTAURANT_STAFF'], group: 'CloudView' },
   // Billing
   { key: 'invoices', label: 'Invoices', icon: <FileText className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'Billing' },
   { key: 'payments', label: 'Payments', icon: <CreditCard className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF', 'RESTAURANT_STAFF'], group: 'Billing' },
+  { key: 'deposits', label: 'Deposits', icon: <Landmark className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF'], group: 'Billing' },
   // Analytics
   { key: 'reports', label: 'Reports', icon: <BarChart3 className="h-4 w-4" />, allowedRoles: ['ADMIN', 'HOTEL_STAFF', 'RESTAURANT_STAFF'], group: 'Analytics' },
   // Admin
@@ -131,9 +138,14 @@ function LoginForm() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [seeding, setSeeding] = useState(false)
+  const [emailBlocking, setEmailBlocking] = useState(false)
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (emailBlocking) {
+      toast({ title: 'Invalid email', description: 'Enter a valid email address', variant: 'destructive' })
+      return
+    }
     setLoading(true)
     try {
       const res = await api.post<{ success: boolean; data: { user: { id: string; email: string; name: string; avatar?: string | null; phone?: string | null; role: string }; token: string } }>('/auth/login', { email, password })
@@ -207,12 +219,13 @@ function LoginForm() {
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
                 <Label htmlFor="email">Email</Label>
-                <Input
+                <EmailInput
                   id="email"
-                  type="email"
                   placeholder="Enter your email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={setEmail}
+                  mode="format-only"
+                  onValidationChange={(result) => setEmailBlocking(result.isBlocking)}
                   required
                   className="mt-1"
                 />
@@ -318,14 +331,17 @@ const pageTitles: Record<PageKey, string> = {
   'room-types': 'Room Types',
   'bookings': 'Reservations',
   'customers': 'Guest Management',
+  'company-ledger': 'Company Ledger',
   'housekeeping': 'Housekeeping',
   'pos': 'POS Terminal',
   'menu': 'Menu Management',
   'orders': 'Order Management',
   'kitchen': 'Kitchen Display',
   'tables': 'Table Management',
+  'waiters': 'Waiter Management',
   'invoices': 'Invoices',
   'payments': 'Payments',
+  'deposits': 'Deposits',
   'reports': 'Reports & Analytics',
   'admin-dashboard': 'Admin Dashboard',
   'users': 'User Management',
@@ -438,14 +454,17 @@ function ERPApp() {
       case 'room-types': return <RoomTypesPage />
       case 'bookings': return <BookingsPage />
       case 'customers': return <CustomersPage />
+      case 'company-ledger': return <CompanyLedgerPage />
       case 'housekeeping': return <HousekeepingPage />
       case 'pos': return <POSPage />
       case 'menu': return <MenuPage />
       case 'orders': return <OrdersPage />
       case 'kitchen': return <KitchenPage />
       case 'tables': return <TablesPage />
+      case 'waiters': return <WaitersPage />
       case 'invoices': return <InvoicesPage />
       case 'payments': return <PaymentsPage />
+      case 'deposits': return <DepositsPage />
       case 'reports': return <ReportsPage />
       case 'admin-dashboard': return <AdminDashboard />
       case 'users': return <UsersPage />
@@ -648,7 +667,7 @@ function ERPApp() {
         )}
       >
         {/* Top Bar */}
-        <header className="sticky top-0 z-40 bg-background/90 backdrop-blur-md border-b border-border px-4 py-3 flex items-center justify-between shadow-sm">
+        <header className="sticky top-0 z-50 bg-background/90 backdrop-blur-md border-b border-border px-4 py-3 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(true)}>
               <Menu className="h-5 w-5" />

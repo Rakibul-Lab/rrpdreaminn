@@ -1,14 +1,35 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
 import { useAuthStore, canAccessHotel, canAccessRestaurant, canAccessAdmin } from '@/lib/auth-store'
 import { useToast } from '@/hooks/use-toast'
-import { format, startOfDay, startOfWeek, startOfMonth, isToday } from 'date-fns'
+import { format } from 'date-fns'
 import {
-  CreditCard, Plus, Search, Filter, RefreshCw, Wallet, TrendingUp, Calendar
+  CreditCard, Plus, Filter, RefreshCw, Wallet, TrendingUp, Calendar, CalendarRange, FileDown, Loader2, UtensilsCrossed
 } from 'lucide-react'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { RestaurantDuesPanel } from './RestaurantDuesPanel'
+import {
+  BOOKING_DATE_PRESET_OPTIONS,
+  resolveBookingDateRange,
+  type BookingDatePreset,
+} from '@/lib/booking-date-filter'
+import {
+  buildPaymentsExportQuery,
+  downloadPaymentsPdf,
+  type PaymentExportRecord,
+} from '@/lib/payments-export'
+import {
+  formatPaymentLastFourDisplay,
+  formatPaymentMethod,
+  formatPaymentReferenceDisplay,
+  isValidPaymentAccountLastFour,
+  PAYMENT_METHOD_OPTIONS_WITH_PAYMENT,
+  paymentRequiresLastFour,
+  paymentRequiresReference,
+} from '@/lib/payment-method'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +46,8 @@ import {
 } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
+import { getPaginationPages } from '@/lib/pagination-pages'
+import { cn } from '@/lib/utils'
 
 interface Payment {
   id: string
@@ -34,6 +57,7 @@ interface Payment {
   bookingId: string | null
   orderId: string | null
   reference: string | null
+  accountLastFour: string | null
   notes: string | null
   createdAt: string
   booking: {
@@ -46,7 +70,8 @@ interface Payment {
     orderNumber: string
     orderType: string
   } | null
-  receiver: { id: string; name: string }
+  receiver: { id: string; name: string; role?: string }
+  settlementSource?: string | null
 }
 
 interface Booking {
@@ -78,9 +103,22 @@ export default function PaymentsPage() {
   const { toast } = useToast()
   const queryClient = useQueryClient()
 
+  const isHotel = canAccessHotel(user?.role) && !canAccessRestaurant(user?.role)
+  const isRestaurant = canAccessRestaurant(user?.role) && !canAccessHotel(user?.role)
+  const isAdmin = canAccessAdmin(user?.role)
+  const showRestaurantPaymentsOnly = isRestaurant && !isAdmin
+
   const [paymentTypeFilter, setPaymentTypeFilter] = useState<string>('all')
   const [methodFilter, setMethodFilter] = useState<string>('all')
+  const [datePreset, setDatePreset] = useState<BookingDatePreset>('today')
+  const [customDateFrom, setCustomDateFrom] = useState('')
+  const [customDateTo, setCustomDateTo] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [activeTab, setActiveTab] = useState(
+    showRestaurantPaymentsOnly ? 'restaurant-dues' : 'records'
+  )
+  const [exporting, setExporting] = useState(false)
   const [showNewPaymentDialog, setShowNewPaymentDialog] = useState(false)
   const [paymentForm, setPaymentForm] = useState({
     paymentType: 'PARTIAL',
@@ -89,26 +127,104 @@ export default function PaymentsPage() {
     amount: '',
     method: 'CASH',
     reference: '',
+    accountLastFour: '',
     notes: '',
   })
 
-  // Determine payment types available based on role
-  const isHotel = canAccessHotel(user?.role) && !canAccessRestaurant(user?.role)
-  const isRestaurant = canAccessRestaurant(user?.role) && !canAccessHotel(user?.role)
-  const isAdmin = canAccessAdmin(user?.role)
+  const showFormReference = paymentRequiresReference(paymentForm.method)
+  const showFormLastFour = paymentRequiresLastFour(paymentForm.method)
+
+  const resetPaymentForm = () => {
+    setPaymentForm({
+      paymentType: 'PARTIAL',
+      bookingId: '',
+      orderId: '',
+      amount: '',
+      method: 'CASH',
+      reference: '',
+      accountLastFour: '',
+      notes: '',
+    })
+  }
+
+  const handlePaymentMethodChange = (method: string) => {
+    setPaymentForm((f) => ({
+      ...f,
+      method,
+      reference: paymentRequiresReference(method) ? f.reference : '',
+      accountLastFour: paymentRequiresLastFour(method) ? f.accountLastFour : '',
+    }))
+  }
+
+  const validatePaymentForm = (): string | null => {
+    if (!paymentForm.amount || parseFloat(paymentForm.amount) <= 0) {
+      return 'Enter a valid payment amount.'
+    }
+    if (showFormReference && !paymentForm.reference.trim()) {
+      return 'Payment reference is required for this payment method.'
+    }
+    if (showFormLastFour && !isValidPaymentAccountLastFour(paymentForm.accountLastFour)) {
+      return 'Enter exactly 4 digits for card / bKash / Nagad / Upay.'
+    }
+    return null
+  }
+
+  const dateRange = useMemo(
+    () => resolveBookingDateRange(datePreset, customDateFrom, customDateTo),
+    [datePreset, customDateFrom, customDateTo]
+  )
+
+  const buildPaymentsQuery = (p: number, limit: number) => {
+    const params = new URLSearchParams()
+    params.set('page', String(p))
+    params.set('limit', String(limit))
+    if (paymentTypeFilter !== 'all') params.set('paymentType', paymentTypeFilter)
+    if (methodFilter !== 'all') params.set('method', methodFilter)
+    if (dateRange.dateFrom) params.set('startDate', dateRange.dateFrom)
+    if (dateRange.dateTo) params.set('endDate', dateRange.dateTo)
+    return `/payments?${params.toString()}`
+  }
+
+  const fetchPaymentSum = async (preset: BookingDatePreset) => {
+    const range = resolveBookingDateRange(preset)
+    const params = new URLSearchParams({ page: '1', limit: '1' })
+    if (range.dateFrom) params.set('startDate', range.dateFrom)
+    if (range.dateTo) params.set('endDate', range.dateTo)
+    const res = await api.get<{ success: boolean; meta?: { sumAmount?: number } }>(
+      `/payments?${params.toString()}`
+    )
+    return res?.meta?.sumAmount ?? 0
+  }
 
   // Fetch payments
   const { data: paymentsData, isLoading } = useQuery({
-    queryKey: ['payments', paymentTypeFilter, methodFilter, page],
+    queryKey: ['payments', paymentTypeFilter, methodFilter, datePreset, customDateFrom, customDateTo, page, pageSize],
     queryFn: async () => {
-      const params = new URLSearchParams()
-      params.set('page', String(page))
-      params.set('limit', '20')
-      if (paymentTypeFilter !== 'all') params.set('paymentType', paymentTypeFilter)
-      if (methodFilter !== 'all') params.set('method', methodFilter)
-      const res = await api.get<{ success: boolean; data: Payment[]; meta?: { total: number; totalPages: number } }>(`/payments?${params.toString()}`)
+      const res = await api.get<{
+        success: boolean
+        data: Payment[]
+        meta?: { total: number; totalPages: number; sumAmount?: number }
+      }>(buildPaymentsQuery(page, pageSize))
       return res
     },
+    enabled: !!user,
+  })
+
+  const { data: todayTotal = 0 } = useQuery({
+    queryKey: ['payments-summary', 'today'],
+    queryFn: () => fetchPaymentSum('today'),
+    enabled: !!user,
+  })
+
+  const { data: weekTotal = 0 } = useQuery({
+    queryKey: ['payments-summary', 'this_week'],
+    queryFn: () => fetchPaymentSum('this_week'),
+    enabled: !!user,
+  })
+
+  const { data: monthTotal = 0 } = useQuery({
+    queryKey: ['payments-summary', 'this_month'],
+    queryFn: () => fetchPaymentSum('this_month'),
     enabled: !!user,
   })
 
@@ -139,7 +255,8 @@ export default function PaymentsPage() {
         amount: parseFloat(paymentForm.amount),
         method: paymentForm.method,
         paymentType: paymentForm.paymentType,
-        reference: paymentForm.reference || null,
+        reference: showFormReference ? paymentForm.reference.trim() : null,
+        accountLastFour: showFormLastFour ? paymentForm.accountLastFour.trim() : null,
         notes: paymentForm.notes || null,
       }
       if (paymentForm.bookingId) payload.bookingId = paymentForm.bookingId
@@ -148,9 +265,11 @@ export default function PaymentsPage() {
     },
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['payments'] })
+      queryClient.invalidateQueries({ queryKey: ['payments-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['restaurant-dues'] })
       toast({ title: 'Payment Recorded', description: res.message || 'Payment recorded successfully' })
       setShowNewPaymentDialog(false)
-      setPaymentForm({ paymentType: 'PARTIAL', bookingId: '', orderId: '', amount: '', method: 'CASH', reference: '', notes: '' })
+      resetPaymentForm()
     },
     onError: () => {
       toast({ title: 'Error', description: 'Failed to record payment', variant: 'destructive' })
@@ -158,18 +277,47 @@ export default function PaymentsPage() {
   })
 
   const payments = paymentsData?.data || []
-  const totalPages = paymentsData?.meta?.totalPages || 1
+  const totalPages = Math.max(paymentsData?.meta?.totalPages || 1, 1)
+  const filteredSum = paymentsData?.meta?.sumAmount ?? 0
+  const filteredTotal = paymentsData?.meta?.total ?? 0
+  const rangeStart = filteredTotal === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(page * pageSize, filteredTotal)
+  const pageNumbers = getPaginationPages(page, totalPages)
 
-  // Calculate summary
-  const todayPayments = payments.filter((p) => isToday(new Date(p.createdAt)))
-  const todayTotal = todayPayments.reduce((sum, p) => sum + p.amount, 0)
-
-  const weekStart = startOfWeek(new Date())
-  const monthStart = startOfMonth(new Date())
-  const weekPayments = payments.filter((p) => new Date(p.createdAt) >= weekStart)
-  const monthPayments = payments.filter((p) => new Date(p.createdAt) >= monthStart)
-  const weekTotal = weekPayments.reduce((sum, p) => sum + p.amount, 0)
-  const monthTotal = monthPayments.reduce((sum, p) => sum + p.amount, 0)
+  const handleExportPdf = async () => {
+    setExporting(true)
+    try {
+      const url = buildPaymentsExportQuery({
+        paymentType: paymentTypeFilter,
+        method: methodFilter,
+        dateFrom: dateRange.dateFrom,
+        dateTo: dateRange.dateTo,
+      })
+      const res = await api.get<{ success: boolean; data: PaymentExportRecord[] }>(url)
+      if (!res?.success || !res.data?.length) {
+        toast({ title: 'No payments', description: 'No payments to export for the selected filters', variant: 'destructive' })
+        return
+      }
+      await downloadPaymentsPdf(res.data, {
+        exportedAt: new Date(),
+        generatedBy: user ? { name: user.name, email: user.email, role: user.role } : undefined,
+        datePreset,
+        customDateFrom,
+        customDateTo,
+        paymentType: paymentTypeFilter,
+        method: methodFilter,
+      })
+      toast({ title: 'Exported', description: 'Payments PDF downloaded' })
+    } catch (err) {
+      toast({
+        title: 'Export failed',
+        description: err instanceof Error ? err.message : 'Could not export payments',
+        variant: 'destructive',
+      })
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -181,18 +329,56 @@ export default function PaymentsPage() {
             Payments
           </h2>
           <p className="text-muted-foreground text-sm mt-1">
-            {isHotel ? 'Hotel payments' : isRestaurant ? 'Restaurant payments' : 'All payment records'}
+            {isHotel
+              ? 'Hotel booking payments and restaurant due settlement'
+              : showRestaurantPaymentsOnly
+                ? 'Your restaurant receipts and hotel due settlements'
+                : 'All payment records'}
           </p>
         </div>
-        <Button
-          onClick={() => setShowNewPaymentDialog(true)}
-          className="bg-amber-600 hover:bg-amber-700 text-white"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Record Payment
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {activeTab === 'records' && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => void handleExportPdf()}
+                disabled={exporting || isLoading}
+              >
+                {exporting ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <FileDown className="h-4 w-4 mr-2" />
+                )}
+                Export PDF
+              </Button>
+              <Button
+                onClick={() => setShowNewPaymentDialog(true)}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Record Payment
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="records">
+            {showRestaurantPaymentsOnly ? 'My restaurant payments' : 'Payment records'}
+          </TabsTrigger>
+          <TabsTrigger value="restaurant-dues">
+            <UtensilsCrossed className="h-4 w-4 mr-1.5" />
+            Restaurant due
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="restaurant-dues" className="mt-4">
+          <RestaurantDuesPanel />
+        </TabsContent>
+
+        <TabsContent value="records" className="mt-4 space-y-4">
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
@@ -233,8 +419,67 @@ export default function PaymentsPage() {
       {/* Filters */}
       <Card>
         <CardContent className="p-4">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Select value={paymentTypeFilter} onValueChange={setPaymentTypeFilter}>
+          <div className="flex flex-col sm:flex-row flex-wrap gap-3">
+            <Select
+              value={datePreset}
+              onValueChange={(v) => {
+                setDatePreset(v as BookingDatePreset)
+                setPage(1)
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-44">
+                <CalendarRange className="h-4 w-4 mr-2 text-muted-foreground" />
+                <SelectValue placeholder="Date" />
+              </SelectTrigger>
+              <SelectContent>
+                {BOOKING_DATE_PRESET_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {datePreset === 'custom' && (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="payment-date-from" className="text-xs text-muted-foreground">
+                    From
+                  </Label>
+                  <Input
+                    id="payment-date-from"
+                    type="date"
+                    value={customDateFrom}
+                    onChange={(e) => {
+                      setCustomDateFrom(e.target.value)
+                      setPage(1)
+                    }}
+                    className="w-40"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="payment-date-to" className="text-xs text-muted-foreground">
+                    To
+                  </Label>
+                  <Input
+                    id="payment-date-to"
+                    type="date"
+                    value={customDateTo}
+                    onChange={(e) => {
+                      setCustomDateTo(e.target.value)
+                      setPage(1)
+                    }}
+                    className="w-40"
+                  />
+                </div>
+              </>
+            )}
+            <Select
+              value={paymentTypeFilter}
+              onValueChange={(v) => {
+                setPaymentTypeFilter(v)
+                setPage(1)
+              }}
+            >
               <SelectTrigger className="w-full sm:w-48">
                 <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
                 <SelectValue placeholder="Payment type" />
@@ -248,21 +493,32 @@ export default function PaymentsPage() {
                 {(isRestaurant || isAdmin) && <SelectItem value="RESTAURANT">Restaurant</SelectItem>}
               </SelectContent>
             </Select>
-            <Select value={methodFilter} onValueChange={setMethodFilter}>
+            <Select
+              value={methodFilter}
+              onValueChange={(v) => {
+                setMethodFilter(v)
+                setPage(1)
+              }}
+            >
               <SelectTrigger className="w-full sm:w-48">
                 <SelectValue placeholder="Payment method" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Methods</SelectItem>
-                <SelectItem value="CASH">Cash</SelectItem>
-                <SelectItem value="CARD">Card</SelectItem>
-                <SelectItem value="MOBILE_BANKING">Mobile Banking</SelectItem>
+                {PAYMENT_METHOD_OPTIONS_WITH_PAYMENT.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Button
               variant="outline"
               size="icon"
-              onClick={() => queryClient.invalidateQueries({ queryKey: ['payments'] })}
+              onClick={() => {
+                queryClient.invalidateQueries({ queryKey: ['payments'] })
+                queryClient.invalidateQueries({ queryKey: ['payments-summary'] })
+              }}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
@@ -282,7 +538,9 @@ export default function PaymentsPage() {
                   <TableHead>Method</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
                   <TableHead>Reference</TableHead>
-                  <TableHead>Link</TableHead>
+                  <TableHead>Last 4</TableHead>
+                  <TableHead>Notes</TableHead>
+                  <TableHead>Rooms</TableHead>
                   <TableHead>Received By</TableHead>
                 </TableRow>
               </TableHeader>
@@ -290,14 +548,14 @@ export default function PaymentsPage() {
                 {isLoading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <TableRow key={i}>
-                      {Array.from({ length: 7 }).map((_, j) => (
+                      {Array.from({ length: 9 }).map((_, j) => (
                         <TableCell key={j}><Skeleton className="h-4 w-20" /></TableCell>
                       ))}
                     </TableRow>
                   ))
                 ) : payments.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
                       No payments found
                     </TableCell>
                   </TableRow>
@@ -312,18 +570,24 @@ export default function PaymentsPage() {
                           {payment.paymentType}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm">{payment.method.replace('_', ' ')}</TableCell>
+                      <TableCell className="text-sm">{formatPaymentMethod(payment.method)}</TableCell>
                       <TableCell className="text-right font-semibold text-emerald-600">
                         ৳{payment.amount.toLocaleString()}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{payment.reference || '-'}</TableCell>
+                      <TableCell className="font-mono text-xs max-w-[140px] truncate">
+                        {formatPaymentReferenceDisplay(payment.method, payment.reference)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {formatPaymentLastFourDisplay(payment.method, payment.accountLastFour)}
+                      </TableCell>
+                      <TableCell className="text-sm max-w-[160px] truncate">
+                        {payment.notes || '—'}
+                      </TableCell>
                       <TableCell className="text-sm">
-                        {payment.booking ? (
-                          <span>Room {payment.booking.room?.roomNumber} - {payment.booking.customer?.name}</span>
-                        ) : payment.order ? (
-                          <span>{payment.order.orderNumber} ({payment.order.orderType})</span>
+                        {payment.booking?.room?.roomNumber ? (
+                          <span>Room {payment.booking.room.roomNumber}</span>
                         ) : (
-                          <span className="text-muted-foreground">-</span>
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </TableCell>
                       <TableCell className="text-sm">{payment.receiver?.name || 'N/A'}</TableCell>
@@ -333,21 +597,89 @@ export default function PaymentsPage() {
               </TableBody>
             </Table>
           </div>
+          {!isLoading && payments.length > 0 && (
+            <div className="flex flex-col gap-2 border-t bg-emerald-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-sm text-muted-foreground">
+                {filteredTotal} payment{filteredTotal === 1 ? '' : 's'} in selected period
+              </span>
+              <span className="text-base font-bold text-emerald-700">
+                Total: ৳{filteredSum.toLocaleString()}
+              </span>
+            </div>
+          )}
+          <div className="flex flex-col gap-3 border-t bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              {filteredTotal === 0 ? 'No results' : `Showing ${rangeStart}–${rangeEnd} of ${filteredTotal}`}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => {
+                  setPageSize(Number(v))
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger className="h-8 w-[110px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10 / page</SelectItem>
+                  <SelectItem value="20">20 / page</SelectItem>
+                  <SelectItem value="50">50 / page</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </Button>
+              <div className="flex flex-wrap items-center gap-1">
+                {pageNumbers.map((item, index) =>
+                  item === 'ellipsis' ? (
+                    <span
+                      key={`ellipsis-${index}`}
+                      className="flex h-8 min-w-8 items-center justify-center px-1 text-sm text-muted-foreground"
+                    >
+                      …
+                    </span>
+                  ) : (
+                    <Button
+                      key={item}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className={cn(
+                        'h-8 min-w-8 px-2',
+                        item === page &&
+                          'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 hover:text-white'
+                      )}
+                      onClick={() => setPage(item)}
+                      aria-current={item === page ? 'page' : undefined}
+                    >
+                      {item}
+                    </Button>
+                  )
+                )}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex justify-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
-            Previous
-          </Button>
-          <span className="flex items-center px-3 text-sm text-muted-foreground">Page {page} of {totalPages}</span>
-          <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>
-            Next
-          </Button>
-        </div>
-      )}
+        </TabsContent>
+      </Tabs>
 
       {/* New Payment Dialog */}
       <Dialog open={showNewPaymentDialog} onOpenChange={setShowNewPaymentDialog}>
@@ -420,24 +752,53 @@ export default function PaymentsPage() {
 
             <div>
               <Label>Payment Method</Label>
-              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm((f) => ({ ...f, method: v }))}>
+              <Select value={paymentForm.method} onValueChange={handlePaymentMethodChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="CASH">Cash</SelectItem>
-                  <SelectItem value="CARD">Card</SelectItem>
-                  <SelectItem value="MOBILE_BANKING">Mobile Banking</SelectItem>
+                  {PAYMENT_METHOD_OPTIONS_WITH_PAYMENT.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
 
-            <div>
-              <Label>Reference (optional)</Label>
-              <Input
-                placeholder="Transaction reference"
-                value={paymentForm.reference}
-                onChange={(e) => setPaymentForm((f) => ({ ...f, reference: e.target.value }))}
-              />
-            </div>
+            {(showFormReference || showFormLastFour) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {showFormReference && (
+                  <div>
+                    <Label>
+                      Reference <span className="text-red-600">*</span>
+                    </Label>
+                    <Input
+                      placeholder="e.g. transaction ID or receipt number"
+                      value={paymentForm.reference}
+                      onChange={(e) => setPaymentForm((f) => ({ ...f, reference: e.target.value }))}
+                    />
+                  </div>
+                )}
+                {showFormLastFour && (
+                  <div>
+                    <Label>
+                      Last 4 digits <span className="text-red-600">*</span>
+                    </Label>
+                    <Input
+                      inputMode="numeric"
+                      maxLength={4}
+                      placeholder="e.g. 4567"
+                      value={paymentForm.accountLastFour}
+                      onChange={(e) =>
+                        setPaymentForm((f) => ({
+                          ...f,
+                          accountLastFour: e.target.value.replace(/\D/g, '').slice(0, 4),
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <Label>Notes (optional)</Label>
@@ -453,8 +814,21 @@ export default function PaymentsPage() {
             <Button variant="outline" onClick={() => setShowNewPaymentDialog(false)}>Cancel</Button>
             <Button
               className="bg-emerald-600 hover:bg-emerald-700 text-white"
-              disabled={!paymentForm.amount || parseFloat(paymentForm.amount) <= 0 || createPaymentMutation.isPending}
-              onClick={() => createPaymentMutation.mutate()}
+              disabled={
+                !paymentForm.amount ||
+                parseFloat(paymentForm.amount) <= 0 ||
+                createPaymentMutation.isPending ||
+                (showFormReference && !paymentForm.reference.trim()) ||
+                (showFormLastFour && !isValidPaymentAccountLastFour(paymentForm.accountLastFour))
+              }
+              onClick={() => {
+                const err = validatePaymentForm()
+                if (err) {
+                  toast({ title: 'Validation', description: err, variant: 'destructive' })
+                  return
+                }
+                createPaymentMutation.mutate()
+              }}
             >
               {createPaymentMutation.isPending ? 'Recording...' : 'Record Payment'}
             </Button>

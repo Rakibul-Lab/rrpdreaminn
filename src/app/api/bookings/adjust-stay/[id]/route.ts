@@ -32,13 +32,6 @@ async function loadBooking(id: string) {
   })
 }
 
-async function getDefaultDiscountPercent(): Promise<number> {
-  const discountSetting = await db.setting.findUnique({
-    where: { key: 'default_discount_percent' },
-  })
-  return discountSetting ? parseFloat(discountSetting.value) || 0 : 0
-}
-
 async function previewForBooking(
   booking: NonNullable<Awaited<ReturnType<typeof loadBooking>>>,
   settings: StayAdjustmentInput
@@ -298,7 +291,9 @@ export async function POST(
         restaurantOrders,
         lateCheckoutCharge: 0,
         payments: updatedBooking.payments,
-        defaultDiscountPercent: await getDefaultDiscountPercent(),
+        discountEnabled: updatedBooking.discountEnabled === true,
+        discountType: updatedBooking.discountType,
+        discountValue: updatedBooking.discountValue,
         includeExtraCharges: true,
         asOf: now,
       })

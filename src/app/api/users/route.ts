@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { successResponse, errorResponse, paginatedResponse, logActivity } from '@/lib/api-utils';
 import { hashPassword } from '@/lib/password';
+import { getEmailValidationError } from '@/lib/email-verify-server';
 
 // GET /api/users - List users (ADMIN only)
 export async function GET(request: NextRequest) {
@@ -70,6 +71,13 @@ export async function POST(request: NextRequest) {
       return errorResponse('Name, email, password, and role are required');
     }
 
+    const emailError = await getEmailValidationError(
+      email,
+      false,
+      body.emailVerificationToken
+    );
+    if (emailError) return errorResponse(emailError);
+
     const validRoles = ['ADMIN', 'HOTEL_STAFF', 'RESTAURANT_STAFF'];
     if (!validRoles.includes(role)) {
       return errorResponse('Invalid role. Must be ADMIN, HOTEL_STAFF, or RESTAURANT_STAFF');
@@ -133,6 +141,15 @@ export async function PUT(request: NextRequest) {
     const existing = await db.user.findUnique({ where: { id } });
     if (!existing) {
       return errorResponse('User not found', 404);
+    }
+
+    if (email !== undefined) {
+      const emailError = await getEmailValidationError(
+        email,
+        false,
+        body.emailVerificationToken
+      );
+      if (emailError) return errorResponse(emailError);
     }
 
     const updateData: Record<string, unknown> = {};

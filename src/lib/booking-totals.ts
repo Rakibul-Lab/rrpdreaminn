@@ -1,3 +1,9 @@
+import {
+  computeHotelDiscountAmount,
+  parseBookingDiscountType,
+  type BookingDiscountInput,
+} from '@/lib/booking-discount'
+
 export const DEFAULT_VAT_PERCENT = 15
 
 /** Keyboard ↑/↓ step for VAT % inputs (14 → 14.1 → 14.2). */
@@ -22,16 +28,25 @@ function effectiveVatRate(options?: number | BookingVatOptions): number {
 export function computeRoomBookingTotals(
   totalRoomCharge: number,
   totalPaid: number,
-  vatOptions?: number | BookingVatOptions
+  vatOptions?: number | BookingVatOptions,
+  discount?: BookingDiscountInput
 ) {
   const rate = effectiveVatRate(vatOptions)
   const vatApplied = rate > 0
-  const vatAmount = (totalRoomCharge * rate) / 100
-  const totalWithVat = totalRoomCharge + vatAmount
+  const discountAmount = computeHotelDiscountAmount(
+    totalRoomCharge,
+    discount?.discountEnabled === true,
+    parseBookingDiscountType(discount?.discountType),
+    Number(discount?.discountValue) || 0
+  )
+  const taxableRoom = Math.max(0, totalRoomCharge - discountAmount)
+  const vatAmount = (taxableRoom * rate) / 100
+  const totalWithVat = taxableRoom + vatAmount
   const dueAmount = Math.max(0, totalWithVat - totalPaid)
   return {
     vatApplied,
     vatPercent: rate,
+    discountAmount,
     vatAmount,
     totalWithVat,
     dueAmount,

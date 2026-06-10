@@ -246,6 +246,63 @@ export function formatListBookingCheckOut(
   return formatBookingDatetime(booking.checkOut, times.checkOutTime, compact)
 }
 
+export type BookingDatetimeParts = {
+  date: string
+  time: string
+}
+
+function resolveListBookingDatetime(
+  value: string | Date,
+  fallbackTimeHHmm?: string
+): Date | null {
+  const date = typeof value === 'string' ? new Date(value) : value
+  if (Number.isNaN(date.getTime())) return null
+  if (fallbackTimeHHmm && isDateOnlyBookingDatetime(date)) {
+    return applyHotelTimeToDate(startOfDay(date), fallbackTimeHHmm)
+  }
+  return date
+}
+
+function splitBookingDatetimeParts(
+  value: string | Date,
+  fallbackTimeHHmm?: string,
+  compact = false
+): BookingDatetimeParts {
+  const resolved = resolveListBookingDatetime(value, fallbackTimeHHmm)
+  if (!resolved) {
+    return { date: '—', time: '—' }
+  }
+  return {
+    date: format(resolved, compact ? 'dd/MM/yyyy' : 'dd MMM yyyy'),
+    time: format(resolved, 'h:mm a'),
+  }
+}
+
+export function getListBookingCheckInParts(
+  booking: BookingListDatetimeFields,
+  times: HotelTimes = DEFAULT_HOTEL_TIMES,
+  compact = false
+): BookingDatetimeParts {
+  if (
+    booking.actualCheckIn &&
+    (booking.status === 'CHECKED_IN' || booking.status === 'CHECKED_OUT')
+  ) {
+    return splitBookingDatetimeParts(booking.actualCheckIn, undefined, compact)
+  }
+  return splitBookingDatetimeParts(booking.checkIn, times.checkInTime, compact)
+}
+
+export function getListBookingCheckOutParts(
+  booking: BookingListDatetimeFields,
+  times: HotelTimes = DEFAULT_HOTEL_TIMES,
+  compact = false
+): BookingDatetimeParts {
+  if (booking.actualCheckOut && booking.status === 'CHECKED_OUT') {
+    return splitBookingDatetimeParts(booking.actualCheckOut, undefined, compact)
+  }
+  return splitBookingDatetimeParts(booking.checkOut, times.checkOutTime, compact)
+}
+
 export function formatBookingCheckIn(
   value: string | Date,
   times: HotelTimes = DEFAULT_HOTEL_TIMES

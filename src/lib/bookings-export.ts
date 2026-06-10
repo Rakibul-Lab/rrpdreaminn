@@ -10,12 +10,17 @@ import {
 import { HOTEL_NAME } from './reservation-terms'
 import { formatBdtForPdf } from './currency'
 import type { BookingsExportFilterLabels } from './booking-date-filter'
+import { getBookingSourceLabel } from './booking-company'
 import { getLogoDataUrl } from './reservation-document-html'
 
 export type BookingExportRecord = {
   id: string
   confirmationNumber?: string | null
   status: string
+  company?: string | null
+  companyLedgerId?: string | null
+  companyLedger?: { name: string } | null
+  isInitialReservation?: boolean
   checkIn: string
   checkOut: string
   actualCheckIn?: string | null
@@ -59,8 +64,11 @@ function formatGeneratedBy(user?: BookingsExportMeta['generatedBy']): string {
   return user.name
 }
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, ' ')
+function bookingStatusLabel(booking: BookingExportRecord): string {
+  if (booking.isInitialReservation && booking.status === 'RESERVED') {
+    return 'Reserved (N.D)'
+  }
+  return booking.status.replace(/_/g, ' ')
 }
 
 function computeBookingExportTotals(bookings: BookingExportRecord[]) {
@@ -98,7 +106,8 @@ export function mapBookingToExportRow(
     'Room Type': booking.room?.type?.name ?? '',
     'Check-in': formatListBookingCheckIn(booking, times),
     'Check-out': formatListBookingCheckOut(booking, times),
-    Status: statusLabel(booking.status),
+    Booking: bookingStatusLabel(booking),
+    Company: getBookingSourceLabel(booking),
     'Reserved by': booking.creator?.name ?? '',
     'Total (incl. VAT)': booking.totalWithVat ?? booking.totalRoomCharge,
     'VAT %': booking.vatPercent ?? '',
@@ -268,9 +277,14 @@ const PDF_COLUMNS: PdfColumn[] = [
     value: (b, t) => formatListBookingCheckOut(b, t),
   },
   {
-    header: 'Status',
+    header: 'Booking',
     width: 22,
-    value: (b) => statusLabel(b.status),
+    value: (b) => bookingStatusLabel(b),
+  },
+  {
+    header: 'Company',
+    width: 28,
+    value: (b) => getBookingSourceLabel(b),
   },
   { header: 'Reserved by', width: 28, value: (b) => b.creator?.name ?? '—' },
   {

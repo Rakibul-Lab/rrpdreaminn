@@ -12,6 +12,10 @@ import {
   sumBookingNetPaid,
 } from '@/lib/booking-totals';
 import { formatGuestCompany } from '@/lib/reservation-terms';
+import {
+  ensureCompanyLedgerGuestFromCustomer,
+  resolveCompanyLedgerBooking,
+} from '@/lib/company-ledger-billing';
 import { resolveBookingCheckInOut } from '@/lib/app-settings';
 import { Prisma, RoleType } from '@prisma/client';
 
@@ -134,7 +138,22 @@ export async function POST(request: NextRequest) {
       checkInNow,
       paymentMethod,
       company,
+      isInitialReservation,
+      withMeal,
+      discountEnabled,
+      discountType,
+      discountValue,
+      companyLedgerId,
+      nationality: nationalityBody,
     } = body;
+
+    const initialReservation = isInitialReservation === true;
+
+    if (initialReservation && checkInNow === true) {
+      return errorResponse(
+        'Initial reservations cannot be checked in immediately. Complete guest ID details first, then check in from bookings.'
+      );
+    }
 
     if (!customerId || !roomId || !checkIn || !checkOut) {
       return errorResponse('Customer ID, room ID, check-in and check-out dates are required');
@@ -144,6 +163,10 @@ export async function POST(request: NextRequest) {
     const customer = await db.customer.findUnique({ where: { id: customerId } });
     if (!customer) {
       return errorResponse('Customer not found');
+    }
+
+    if (!customer.nationality?.trim()) {
+      return errorResponse('Guest nationality is required');
     }
 
     // Verify room exists and is available
@@ -205,15 +228,53 @@ export async function POST(request: NextRequest) {
       const parsed = parseFloat(String(vatPercentBody));
       if (!Number.isNaN(parsed) && parsed >= 0) bookingVatPercent = parsed;
     }
-    const { dueAmount } = computeRoomBookingTotals(totalRoomCharge, advance, {
-      vatApplied: applyVat,
-      vatPercent: bookingVatPercent,
-    });
+    const applyDiscount = discountEnabled === true;
+    const resolvedDiscountType = discountType === 'FIXED' ? 'FIXED' : 'PERCENTAGE';
+    const resolvedDiscountValue = applyDiscount
+      ? Math.max(0, parseFloat(String(discountValue ?? 0)) || 0)
+      : 0;
+
+    const { dueAmount } = computeRoomBookingTotals(
+      totalRoomCharge,
+      advance,
+      {
+        vatApplied: applyVat,
+        vatPercent: bookingVatPercent,
+      },
+      {
+        discountEnabled: applyDiscount,
+        discountType: resolvedDiscountType,
+        discountValue: resolvedDiscountValue,
+      }
+    );
 
     const confirmationNumber = await generateConfirmationNumber();
-    const resolvedCompany = formatGuestCompany(
-      company ?? customer.company
-    );
+    let resolvedCompany = formatGuestCompany(company ?? customer.company);
+    let resolvedCompanyLedgerId: string | null = null;
+    let resolvedCompanyLedgerGuestId: string | null = null;
+
+    if (companyLedgerId) {
+      const ledgerResult = await resolveCompanyLedgerBooking(db, companyLedgerId, null);
+      if ('error' in ledgerResult) {
+        return errorResponse(ledgerResult.error);
+      }
+      resolvedCompanyLedgerId = ledgerResult.companyLedgerId;
+      resolvedCompany = ledgerResult.companyName;
+      resolvedCompanyLedgerGuestId = await ensureCompanyLedgerGuestFromCustomer(
+        db,
+        resolvedCompanyLedgerId,
+        {
+          name: customer.name,
+          phone: customer.phone,
+          email: customer.email,
+          nationality: customer.nationality,
+          registrationNumber: customer.registrationNumber,
+          address: customer.address,
+          idType: customer.idType,
+          idNumber: customer.idNumber,
+        }
+      );
+    }
 
     const booking = await db.booking.create({
       data: {
@@ -221,6 +282,8 @@ export async function POST(request: NextRequest) {
         customerId,
         roomId,
         company: resolvedCompany,
+        companyLedgerId: resolvedCompanyLedgerId,
+        companyLedgerGuestId: resolvedCompanyLedgerGuestId,
         checkIn: checkInDate,
         checkOut: checkOutDate,
         adults: adults || 1,
@@ -231,6 +294,11 @@ export async function POST(request: NextRequest) {
         vatApplied: applyVat,
         vatPercent: bookingVatPercent,
         notes,
+        isInitialReservation: initialReservation,
+        withMeal: withMeal === true,
+        discountEnabled: applyDiscount,
+        discountType: applyDiscount ? resolvedDiscountType : null,
+        discountValue: applyDiscount ? resolvedDiscountValue : 0,
         createdBy: authUser.id,
       },
       include: {
@@ -284,6 +352,11 @@ export async function POST(request: NextRequest) {
           actualCheckIn: new Date(),
           dueAmount: dueAfterCheckIn,
         },
+      });
+    } else {
+      await db.room.update({
+        where: { id: roomId },
+        data: { status: 'RESERVED' },
       });
     }
 

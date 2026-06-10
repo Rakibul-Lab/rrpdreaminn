@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -21,6 +21,11 @@ import { toast } from 'sonner'
 import { Camera, FileUp, Loader2, ScanLine, Scan, X } from 'lucide-react'
 import { mergeIdFields, hasMinimumScanData, type ExtractedIdFields, type IdDocumentType } from '@/lib/id-ocr'
 import { tryDecodeNidBarcode } from '@/lib/id-barcode'
+import {
+  defaultIdTypeForNationality,
+  getIdTypeOptionsForNationality,
+  isBangladeshNationality,
+} from '@/lib/id-type-label'
 
 export interface IdDocumentItem {
   path: string
@@ -36,6 +41,7 @@ export interface IdScanResult {
 }
 
 interface IdDocumentScannerProps {
+  nationality?: string
   idType: IdDocumentType
   onIdTypeChange: (type: IdDocumentType) => void
   documents: IdDocumentItem[]
@@ -46,12 +52,28 @@ interface IdDocumentScannerProps {
 const MAX_FILES = 12
 
 export function IdDocumentScanner({
+  nationality = 'Bangladesh',
   idType,
   onIdTypeChange,
   documents,
   onDocumentsChange,
   onScanComplete,
 }: IdDocumentScannerProps) {
+  const idTypeOptions = useMemo(
+    () => getIdTypeOptionsForNationality(nationality),
+    [nationality]
+  )
+
+  const effectiveIdType = idTypeOptions.some((opt) => opt.value === idType)
+    ? idType
+    : defaultIdTypeForNationality(nationality)
+
+  useEffect(() => {
+    if (effectiveIdType !== idType) {
+      onIdTypeChange(effectiveIdType)
+    }
+  }, [effectiveIdType, idType, onIdTypeChange])
+
   const scannerInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -206,7 +228,7 @@ export function IdDocumentScanner({
           setScanMessage(`Processing ${i + 1} of ${batch.length}…`)
 
           let barcodeHint: Partial<ExtractedIdFields> | null = null
-          if (idType === 'national_id') {
+          if (idType === 'national_id' && isBangladeshNationality(nationality)) {
             barcodeHint = await tryDecodeNidBarcode(file)
           }
 
@@ -268,11 +290,13 @@ export function IdDocumentScanner({
   const removeDocument = (index: number) => {
     const next = documents.filter((_, i) => i !== index)
     onDocumentsChange(next)
-    onScanComplete({
-      idDocPaths: next.map((d) => d.path),
-      documents: next,
-      idType,
-    })
+    if (next.length > 0) {
+      onScanComplete({
+        idDocPaths: next.map((d) => d.path),
+        documents: next,
+        idType,
+      })
+    }
   }
 
   const openCamera = async () => {
@@ -350,14 +374,19 @@ export function IdDocumentScanner({
 
       <div className="space-y-2">
         <Label className="text-xs">Document type</Label>
-        <Select value={idType} onValueChange={(v) => onIdTypeChange(v as IdDocumentType)}>
+        <Select
+          value={effectiveIdType}
+          onValueChange={(v) => onIdTypeChange(v as IdDocumentType)}
+        >
           <SelectTrigger className="h-9 bg-card">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="national_id">National ID (NID)</SelectItem>
-            <SelectItem value="passport">Passport</SelectItem>
-            <SelectItem value="driving_license">Driving License</SelectItem>
+            {idTypeOptions.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.value === 'national_id' ? 'National ID (NID)' : opt.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

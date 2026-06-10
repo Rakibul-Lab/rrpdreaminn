@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/lib/auth-store'
 import { useAuthHydration } from '@/hooks/use-auth-hydration'
@@ -18,8 +17,12 @@ const ACTIVITY_EVENTS = [
   'focusin',
 ] as const
 
+function redirectToLogin() {
+  if (typeof window === 'undefined') return
+  window.location.replace('/')
+}
+
 export function useSessionTimeout() {
-  const router = useRouter()
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const hasHydrated = useAuthHydration()
   const lastActivityAt = useAuthStore((s) => s.lastActivityAt)
@@ -31,7 +34,7 @@ export function useSessionTimeout() {
     expiredHandledRef.current = true
     const message = performLogout('idle')
     toast.warning(message)
-    router.replace('/')
+    redirectToLogin()
   }
 
   useEffect(() => {
@@ -76,10 +79,10 @@ export function useSessionTimeout() {
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(interval)
     }
-  }, [hasHydrated, isAuthenticated, touchActivity, router])
+  }, [hasHydrated, isAuthenticated, touchActivity])
 
   useEffect(() => {
     if (!hasHydrated || !isAuthenticated) return
     if (isSessionExpired(lastActivityAt)) expireSession()
-  }, [hasHydrated, isAuthenticated, lastActivityAt, router])
+  }, [hasHydrated, isAuthenticated, lastActivityAt])
 }

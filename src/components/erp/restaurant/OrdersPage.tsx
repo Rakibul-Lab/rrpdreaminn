@@ -1,8 +1,19 @@
 'use client'
 
-import { Fragment, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
+import { useAuthStore } from '@/lib/auth-store'
+import { resolveBookingDateRange } from '@/lib/booking-date-filter'
+import {
+  ORDER_DATE_PRESET_OPTIONS,
+  type OrderDatePreset,
+} from '@/lib/restaurant-order-date-filter'
+import {
+  buildRestaurantOrdersExportQuery,
+  downloadRestaurantOrdersPdf,
+  type RestaurantOrderExportRecord,
+} from '@/lib/restaurant-orders-export'
 import { toast } from 'sonner'
 import {
   UtensilsCrossed,
@@ -14,14 +25,15 @@ import {
   AlertCircle,
   Eye,
   Flame,
-  ChevronDown,
-  ChevronUp,
-  Filter,
   Search,
-  X,
+  CalendarRange,
+  FileDown,
+  Loader2,
+  ArrowUpDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -102,24 +114,110 @@ const ORDER_TYPE_CONFIG: Record<string, { icon: typeof UtensilsCrossed; label: s
   ROOM_SERVICE: { icon: BedDouble, label: 'Room Svc', color: 'text-amber-600' },
 }
 
+type OrderSort = 'newest' | 'oldest'
+
+function buildOrdersQueryParams(input: {
+  activeTab: string
+  filterType: string
+  dateFrom?: string
+  dateTo?: string
+  sort: OrderSort
+  limit?: number
+}) {
+  const params = new URLSearchParams({
+    limit: String(input.limit ?? 500),
+    sort: input.sort === 'oldest' ? 'asc' : 'desc',
+  })
+  if (input.activeTab !== 'ALL') params.set('status', input.activeTab)
+  if (input.filterType !== 'all') params.set('orderType', input.filterType)
+  if (input.dateFrom) params.set('dateFrom', input.dateFrom)
+  if (input.dateTo) params.set('dateTo', input.dateTo)
+  return params
+}
+
+function matchesOrderSearch(order: RestaurantOrder, query: string) {
+  if (!query) return true
+  const q = query.toLowerCase()
+  return (
+    order.orderNumber.toLowerCase().includes(q) ||
+    order.customerName?.toLowerCase().includes(q) ||
+    order.room?.roomNumber.toLowerCase().includes(q) ||
+    order.table?.tableNumber.toLowerCase().includes(q)
+  )
+}
+
 export default function OrdersPage() {
   const queryClient = useQueryClient()
+  const user = useAuthStore((s) => s.user)
   const [activeTab, setActiveTab] = useState('ALL')
   const [selectedOrder, setSelectedOrder] = useState<RestaurantOrder | null>(null)
   const [filterType, setFilterType] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
+  const [datePreset, setDatePreset] = useState<OrderDatePreset>('today')
+  const [customDateFrom, setCustomDateFrom] = useState('')
+  const [customDateTo, setCustomDateTo] = useState('')
+  const [sortOrder, setSortOrder] = useState<OrderSort>('newest')
+  const [exporting, setExporting] = useState(false)
+
+  const dateRange = useMemo(
+    () => resolveBookingDateRange(datePreset, customDateFrom, customDateTo),
+    [datePreset, customDateFrom, customDateTo]
+  )
 
   // Fetch orders
   const { data: ordersData, isLoading } = useQuery({
-    queryKey: ['restaurant-orders', activeTab, filterType],
+    queryKey: [
+      'restaurant-orders',
+      activeTab,
+      filterType,
+      datePreset,
+      dateRange.dateFrom,
+      dateRange.dateTo,
+      sortOrder,
+    ],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: '100' })
-      if (activeTab !== 'ALL') params.set('status', activeTab)
-      if (filterType !== 'all') params.set('orderType', filterType)
+      const params = buildOrdersQueryParams({
+        activeTab,
+        filterType,
+        dateFrom: dateRange.dateFrom,
+        dateTo: dateRange.dateTo,
+        sort: sortOrder,
+      })
       return api.get<{ success: boolean; data: RestaurantOrder[]; meta?: { total: number } }>(
         `/restaurant-orders?${params.toString()}`
       )
+    },
+    refetchInterval: 15000,
+  })
+
+  const { data: statusStatsData } = useQuery({
+    queryKey: [
+      'restaurant-orders',
+      'status-counts',
+      filterType,
+      datePreset,
+      dateRange.dateFrom,
+      dateRange.dateTo,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (filterType !== 'all') params.set('orderType', filterType)
+      if (dateRange.dateFrom) params.set('dateFrom', dateRange.dateFrom)
+      if (dateRange.dateTo) params.set('dateTo', dateRange.dateTo)
+      return api.get<{
+        success: boolean
+        data: {
+          counts: {
+            ALL: number
+            PENDING: number
+            COOKING: number
+            READY: number
+            DELIVERED: number
+            CANCELLED: number
+          }
+        }
+      }>(`/restaurant-orders/stats?${params.toString()}`)
     },
     refetchInterval: 15000,
   })
@@ -138,31 +236,22 @@ export default function OrdersPage() {
       }
       toast.success(`Order moved to ${nextStatus[variables.status] || variables.status}`)
       queryClient.invalidateQueries({ queryKey: ['restaurant-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['restaurant-orders', 'status-counts'] })
     },
     onError: (error: Error) => {
       toast.error('Failed to update order status', { description: error.message })
     },
   })
 
-  // Filter orders by search
-  const filteredOrders = orders.filter((order) => {
-    if (!searchQuery) return true
-    const q = searchQuery.toLowerCase()
-    return (
-      order.orderNumber.toLowerCase().includes(q) ||
-      order.customerName?.toLowerCase().includes(q) ||
-      order.room?.roomNumber.toLowerCase().includes(q) ||
-      order.table?.tableNumber.toLowerCase().includes(q)
-    )
-  })
+  const filteredOrders = orders.filter((order) => matchesOrderSearch(order, searchQuery))
 
-  // Status counts
-  const statusCounts = {
-    ALL: orders.length,
-    PENDING: orders.filter((o) => o.status === 'PENDING').length,
-    COOKING: orders.filter((o) => o.status === 'COOKING').length,
-    READY: orders.filter((o) => o.status === 'READY').length,
-    DELIVERED: orders.filter((o) => o.status === 'DELIVERED').length,
+  const statusCounts = statusStatsData?.data?.counts ?? {
+    ALL: 0,
+    PENDING: 0,
+    COOKING: 0,
+    READY: 0,
+    DELIVERED: 0,
+    CANCELLED: 0,
   }
 
   const getNextStatus = (current: string): string | null => {
@@ -183,9 +272,58 @@ export default function OrdersPage() {
     return labels[current] || ''
   }
 
-  const formatTime = (dateStr: string) => {
+  const formatDateTime = (dateStr: string) => {
     const date = new Date(dateStr)
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  const handleExportPdf = async () => {
+    setExporting(true)
+    try {
+      const path = buildRestaurantOrdersExportQuery({
+        status: activeTab,
+        orderType: filterType,
+        dateFrom: dateRange.dateFrom,
+        dateTo: dateRange.dateTo,
+        sort: sortOrder === 'oldest' ? 'asc' : 'desc',
+      })
+      const res = await api.get<{ success: boolean; data: RestaurantOrderExportRecord[] }>(path)
+      const exportRows = (res.data ?? []).filter((order) =>
+        matchesOrderSearch(order as RestaurantOrder, searchQuery)
+      )
+      if (!exportRows.length) {
+        toast.error('No orders to export', {
+          description: 'Adjust filters or search to include orders in the export.',
+        })
+        return
+      }
+      await downloadRestaurantOrdersPdf(exportRows, {
+        exportedAt: new Date(),
+        generatedBy: user
+          ? { name: user.name, email: user.email, role: user.role }
+          : undefined,
+        datePreset,
+        customDateFrom,
+        customDateTo,
+        orderType: filterType,
+        status: activeTab,
+        sort: sortOrder,
+        search: searchQuery.trim() || undefined,
+      })
+      toast.success('Orders PDF downloaded')
+    } catch (err) {
+      toast.error('Export failed', {
+        description: err instanceof Error ? err.message : 'Could not export orders',
+      })
+    } finally {
+      setExporting(false)
+    }
   }
 
   const timeElapsed = (dateStr: string) => {
@@ -201,7 +339,7 @@ export default function OrdersPage() {
     <div className="h-full flex flex-col bg-muted">
       {/* Header */}
       <div className="bg-slate-900 text-white px-6 py-4 shrink-0">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-amber-500 flex items-center justify-center">
               <ChefHat className="w-5 h-5 text-white" />
@@ -211,13 +349,27 @@ export default function OrdersPage() {
               <p className="text-xs text-slate-300">CloudView Restaurant</p>
             </div>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-slate-600 text-slate-100 hover:bg-slate-800 hover:text-white"
+            onClick={() => void handleExportPdf()}
+            disabled={exporting || isLoading}
+          >
+            {exporting ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <FileDown className="h-4 w-4 mr-2" />
+            )}
+            Export PDF
+          </Button>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="px-6 py-3 bg-card border-b shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 max-w-sm">
+      <div className="px-6 py-3 bg-card border-b shrink-0 space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               placeholder="Search orders..."
@@ -237,18 +389,64 @@ export default function OrdersPage() {
               <SelectItem value="ROOM_SERVICE">Room Service</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={datePreset} onValueChange={(v) => setDatePreset(v as OrderDatePreset)}>
+            <SelectTrigger className="h-9 w-[160px]">
+              <CalendarRange className="h-4 w-4 mr-2 shrink-0" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ORDER_DATE_PRESET_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as OrderSort)}>
+            <SelectTrigger className="h-9 w-[160px]">
+              <ArrowUpDown className="h-4 w-4 mr-2 shrink-0" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="newest">Newest first</SelectItem>
+              <SelectItem value="oldest">Oldest first</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
+
+        {datePreset === 'custom' && (
+          <div className="flex flex-col sm:flex-row gap-3 max-w-lg">
+            <div className="flex-1">
+              <Label className="text-xs text-muted-foreground">From</Label>
+              <Input
+                type="date"
+                value={customDateFrom}
+                onChange={(e) => setCustomDateFrom(e.target.value)}
+                className="h-9 mt-1"
+              />
+            </div>
+            <div className="flex-1">
+              <Label className="text-xs text-muted-foreground">To</Label>
+              <Input
+                type="date"
+                value={customDateTo}
+                onChange={(e) => setCustomDateTo(e.target.value)}
+                className="h-9 mt-1"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Status Tabs */}
       <div className="px-6 pt-3 bg-card border-b shrink-0">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="bg-muted">
-            {Object.entries(statusCounts).map(([key, count]) => (
+            {(['ALL', 'PENDING', 'COOKING', 'READY', 'DELIVERED'] as const).map((key) => (
               <TabsTrigger key={key} value={key} className="text-xs gap-1.5">
                 {key === 'ALL' ? 'All' : key.charAt(0) + key.slice(1).toLowerCase()}
                 <Badge variant="secondary" className="h-4 min-w-4 text-[10px] px-1">
-                  {count}
+                  {statusCounts[key]}
                 </Badge>
               </TabsTrigger>
             ))}
@@ -280,7 +478,7 @@ export default function OrdersPage() {
                   <TableHead>Items</TableHead>
                   <TableHead>Total</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Time</TableHead>
+                  <TableHead>Date &amp; Time</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -335,7 +533,7 @@ export default function OrdersPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {formatTime(order.createdAt)}
+                          {formatDateTime(order.createdAt)}
                           <br />
                           <span className="text-[10px]">{timeElapsed(order.createdAt)}</span>
                         </TableCell>
@@ -440,7 +638,7 @@ export default function OrdersPage() {
                 </div>
                 <div>
                   <span className="text-muted-foreground">Created:</span>{' '}
-                  {formatTime(selectedOrder.createdAt)}
+                  {formatDateTime(selectedOrder.createdAt)}
                 </div>
                 {selectedOrder.orderType === 'DINE_IN' && selectedOrder.table && (
                   <div>

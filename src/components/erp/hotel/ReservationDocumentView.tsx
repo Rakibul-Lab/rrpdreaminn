@@ -11,8 +11,8 @@ import {
   HOTEL_NAME,
   HOTEL_RESERVATION_FOOTER,
   HOTEL_TAGLINE,
-  DEFAULT_MEAL_PLAN,
   DEFAULT_SMOKING_STATUS,
+  formatReservationMealPlan,
   RESERVATION_INTRO,
   formatGuestCompany,
   reservationPoliciesWithTimes,
@@ -25,6 +25,11 @@ import { bookingVatOptions, computeRoomBookingTotals } from '@/lib/booking-total
 import { printReservationDocument } from '@/lib/print-reservation'
 import { toast } from 'sonner'
 import { Loader2 } from 'lucide-react'
+import {
+  RESERVATION_REQUIRED_PLACEHOLDER,
+  reservationDocValue,
+  reservationIdLabel,
+} from '@/lib/reservation-field-placeholders'
 
 export interface ReservationDocumentData {
   id: string
@@ -42,9 +47,11 @@ export interface ReservationDocumentData {
   totalWithVat?: number
   notes?: string | null
   status: string
+  isInitialReservation?: boolean
   createdAt: string
   formOfPayment?: string
   company?: string | null
+  withMeal?: boolean
   customer: {
     name: string
     phone: string
@@ -53,6 +60,8 @@ export interface ReservationDocumentData {
     address?: string | null
     idType?: string | null
     idNumber?: string | null
+    registrationNumber?: string | null
+    nationality?: string | null
   }
   room: { roomNumber: string; type: { name: string } }
   idDocuments?: { id: string; filePath: string; sortOrder: number }[]
@@ -154,8 +163,16 @@ export function ReservationDocumentView({
   const policies = reservationPoliciesWithTimes(times)
   const confirmationNo = formatConfirmationNumber(reservation)
   const guestsLabel = `${reservation.adults} adult(s)${reservation.children > 0 ? `, ${reservation.children} child(ren)` : ''}`
-  const idLabel = `${idTypeLabel(reservation.customer.idType)}${reservation.customer.idNumber ? ` — ${reservation.customer.idNumber}` : ''}`
+  const showMissingFields = reservation.isInitialReservation === true
+  const idLabel = showMissingFields
+    ? reservationIdLabel(
+        reservation.customer.idType,
+        reservation.customer.idNumber,
+        { requiredWhenMissing: true }
+      )
+    : `${idTypeLabel(reservation.customer.idType)}${reservation.customer.idNumber ? ` — ${reservation.customer.idNumber}` : ''}`
   const idAttachments = reservation.idDocuments ?? []
+  const placeholderClass = 'text-amber-700 italic'
 
   const vatTotals = computeRoomBookingTotals(
     reservation.totalRoomCharge,
@@ -222,6 +239,13 @@ export function ReservationDocumentView({
           </div>
         </header>
 
+        {showMissingFields && (
+          <section className="rd-block rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 print:border print:bg-transparent">
+            <strong>Initial reservation</strong> — some required guest details are not yet provided.
+            Fields marked {RESERVATION_REQUIRED_PLACEHOLDER} must be completed before check-in.
+          </section>
+        )}
+
         <section className="rd-block">
           <p className="rd-line">
             <span className="rd-label">Date:</span>{' '}
@@ -246,7 +270,32 @@ export function ReservationDocumentView({
             </p>
             <p>
               <span className="rd-label">Email:</span>{' '}
-              <span className="rd-muted">{reservation.customer.email || '—'}</span>
+              <span
+                className={`rd-muted ${showMissingFields && !reservation.customer.email?.trim() ? placeholderClass : ''}`}
+              >
+                {reservationDocValue(reservation.customer.email, showMissingFields)}
+              </span>
+            </p>
+          </div>
+          <div className="rd-row-2">
+            <p>
+              <span className="rd-label">Nationality:</span>{' '}
+              <span
+                className={`rd-muted ${showMissingFields && !reservation.customer.nationality?.trim() ? placeholderClass : ''}`}
+              >
+                {reservationDocValue(reservation.customer.nationality, showMissingFields)}
+              </span>
+            </p>
+            <p>
+              <span className="rd-label">Registration No.:</span>{' '}
+              <span
+                className={`rd-muted ${showMissingFields && !reservation.customer.registrationNumber?.trim() ? placeholderClass : ''}`}
+              >
+                {reservationDocValue(
+                  reservation.customer.registrationNumber,
+                  showMissingFields
+                )}
+              </span>
             </p>
           </div>
           <p className="rd-intro">{RESERVATION_INTRO}</p>
@@ -289,14 +338,16 @@ export function ReservationDocumentView({
               </p>
               <p>
                 <span className="rd-label">Meal Plan:</span>{' '}
-                <span className="rd-muted">{DEFAULT_MEAL_PLAN}</span>
+                <span className="rd-muted">{formatReservationMealPlan(reservation.withMeal)}</span>
               </p>
-              {reservation.customer.address ? (
-                <p>
-                  <span className="rd-label">Address:</span>{' '}
-                  <span className="rd-muted">{reservation.customer.address}</span>
-                </p>
-              ) : null}
+              <p>
+                <span className="rd-label">Address:</span>{' '}
+                <span
+                  className={`rd-muted ${showMissingFields && !reservation.customer.address?.trim() ? placeholderClass : ''}`}
+                >
+                  {reservationDocValue(reservation.customer.address, showMissingFields)}
+                </span>
+              </p>
             </div>
             <div className="rd-details-col">
               <p>
@@ -341,7 +392,12 @@ export function ReservationDocumentView({
                 <span className="rd-muted">{reservation.formOfPayment || 'Not paid at booking'}</span>
               </p>
               <p>
-                <span className="rd-label">ID (Check-in):</span> <span className="rd-muted">{idLabel}</span>
+                <span className="rd-label">ID (Check-in):</span>{' '}
+                <span
+                  className={`rd-muted ${showMissingFields && idLabel.includes(RESERVATION_REQUIRED_PLACEHOLDER) ? placeholderClass : ''}`}
+                >
+                  {idLabel}
+                </span>
               </p>
               <p>
                 <span className="rd-label">Remarks:</span>{' '}
@@ -402,7 +458,7 @@ export function ReservationDocumentView({
         </footer>
       </article>
 
-      {idAttachments.length > 0 && (
+      {(idAttachments.length > 0 || showMissingFields) && (
         <article
           id="reservation-id-attachments"
           className="reservation-a4-sheet reservation-a4-sheet--attachments box-border px-[14mm] pt-[12mm] pb-[16mm] shadow-md print:shadow-none print:px-[14mm] print:pt-[12mm] print:pb-[18mm]"
@@ -430,21 +486,48 @@ export function ReservationDocumentView({
               <span className="rd-muted">{reservation.customer.name}</span>
             </p>
             <p className="rd-line">
+              <span className="rd-label">Nationality:</span>{' '}
+              <span
+                className={`rd-muted ${showMissingFields && !reservation.customer.nationality?.trim() ? placeholderClass : ''}`}
+              >
+                {reservationDocValue(reservation.customer.nationality, showMissingFields)}
+              </span>
+            </p>
+            <p className="rd-line">
+              <span className="rd-label">Registration No.:</span>{' '}
+              <span
+                className={`rd-muted ${showMissingFields && !reservation.customer.registrationNumber?.trim() ? placeholderClass : ''}`}
+              >
+                {reservationDocValue(
+                  reservation.customer.registrationNumber,
+                  showMissingFields
+                )}
+              </span>
+            </p>
+            <p className="rd-line">
               <span className="rd-label">ID:</span> <span className="rd-muted">{idLabel}</span>
             </p>
           </section>
           <section className="rd-id-attachments-grid">
-            {idAttachments.map((doc, index) => (
-              <figure key={doc.id} className="rd-id-attachment">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={doc.filePath}
-                  alt={`ID document ${index + 1}`}
-                  className="rd-id-attachment-img"
-                />
-                <figcaption className="rd-id-attachment-caption">Image {index + 1}</figcaption>
-              </figure>
-            ))}
+            {idAttachments.length > 0 ? (
+              idAttachments.map((doc, index) => (
+                <figure key={doc.id} className="rd-id-attachment">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={doc.filePath}
+                    alt={`ID document ${index + 1}`}
+                    className="rd-id-attachment-img"
+                  />
+                  <figcaption className="rd-id-attachment-caption">Image {index + 1}</figcaption>
+                </figure>
+              ))
+            ) : (
+              <div className="rd-id-attachment rd-id-attachment--placeholder flex min-h-[180px] items-center justify-center border border-dashed border-amber-400 bg-amber-50 p-6 text-center text-sm text-amber-800 italic">
+                {RESERVATION_REQUIRED_PLACEHOLDER}
+                <br />
+                ID document image(s) not attached
+              </div>
+            )}
           </section>
           <footer className="rd-document-footer">
             <p className="rd-footer-text">{HOTEL_RESERVATION_FOOTER}</p>

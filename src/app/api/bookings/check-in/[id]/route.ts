@@ -5,6 +5,7 @@ import { successResponse, errorResponse, notFoundResponse, logActivity } from '@
 import { bookingVatOptions, computeRoomBookingTotals, sumBookingNetPaid } from '@/lib/booking-totals';
 import { parsePaymentMethod } from '@/lib/payment-method';
 import { RoleType } from '@prisma/client';
+import { isReservationGuestProfileComplete } from '@/lib/reservation-completion-fields';
 
 export async function POST(
   request: NextRequest,
@@ -32,6 +33,7 @@ export async function POST(
       include: {
         room: { include: { type: true } },
         customer: true,
+        idDocuments: true,
       },
     });
 
@@ -42,6 +44,15 @@ export async function POST(
     // Validate booking status
     if (booking.status !== 'RESERVED') {
       return errorResponse('Only reserved bookings can be checked in');
+    }
+
+    if (
+      booking.isInitialReservation ||
+      !isReservationGuestProfileComplete(booking.customer, booking.idDocuments.length)
+    ) {
+      return errorResponse(
+        'Complete the reservation first — nationality, NID, email, address, registration number, and ID images are required before check-in'
+      );
     }
 
     const initialPaymentAmount = initialPayment ? parseFloat(String(initialPayment)) : 0;
@@ -81,6 +92,7 @@ export async function POST(
       where: { id },
       data: {
         status: 'CHECKED_IN',
+        isInitialReservation: false,
         actualCheckIn: new Date(),
         initialPayment: (booking.initialPayment || 0) + initialPaymentAmount,
         dueAmount,

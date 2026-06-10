@@ -91,7 +91,6 @@ export async function PUT(
             roomId: id,
             taskType: 'cleaning',
             status: 'PENDING',
-            assignedTo: authUser.id,
             notes: `Auto-created from room status change for room ${room.roomNumber}`,
           },
         });

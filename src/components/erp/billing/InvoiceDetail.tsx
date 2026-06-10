@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { PAYMENT_METHOD_OPTIONS_WITH_PAYMENT } from '@/lib/payment-method'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '@/components/ui/table'
@@ -518,9 +519,11 @@ export default function InvoiceDetail({ invoiceId, onClose }: InvoiceDetailProps
               <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm((f) => ({ ...f, method: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="CASH">Cash</SelectItem>
-                  <SelectItem value="CARD">Card</SelectItem>
-                  <SelectItem value="MOBILE_BANKING">Mobile Banking</SelectItem>
+                  {PAYMENT_METHOD_OPTIONS_WITH_PAYMENT.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

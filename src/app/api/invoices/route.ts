@@ -157,12 +157,15 @@ export async function POST(request: NextRequest) {
     const vatApplied = vatOpts.vatApplied !== false;
     const vatPercent = vatApplied ? Math.max(0, vatOpts.vatPercent ?? 0) : 0;
 
-    // Hotel discount from settings (applied only to hotel part)
-    let discount = 0;
-    const discountSetting = await db.setting.findUnique({ where: { key: 'default_discount_percent' } });
-    if (discountSetting) {
-      discount = hotelBase * (parseFloat(discountSetting.value) || 0) / 100;
-    }
+    const { computeHotelDiscountAmount, parseBookingDiscountType } = await import(
+      '@/lib/booking-discount'
+    );
+    const discount = computeHotelDiscountAmount(
+      hotelBase,
+      booking.discountEnabled === true,
+      parseBookingDiscountType(booking.discountType),
+      Number(booking.discountValue) || 0
+    );
 
     const hotelVat =
       vatPercent > 0 ? ((hotelBase - discount) * vatPercent) / 100 : 0;

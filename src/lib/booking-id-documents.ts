@@ -20,3 +20,12 @@ export async function attachIdDocumentsToBooking(
     })),
   })
 }
+
+/** Replace all ID document attachments on a booking. */
+export async function replaceIdDocumentsForBooking(
+  bookingId: string,
+  paths: string[] | undefined | null
+): Promise<void> {
+  await db.bookingIdDocument.deleteMany({ where: { bookingId } })
+  await attachIdDocumentsToBooking(bookingId, paths)
+}

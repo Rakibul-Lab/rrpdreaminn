@@ -1,6 +1,10 @@
 import { format } from 'date-fns'
 import { formatConfirmationNumber } from './confirmation-number'
-import { RESERVATION_TERMS_AND_CONDITIONS, HOTEL_RESERVATION_FOOTER } from './reservation-terms'
+import {
+  RESERVATION_TERMS_AND_CONDITIONS,
+  HOTEL_RESERVATION_FOOTER,
+  formatReservationMealPlan,
+} from './reservation-terms'
 import type { ReservationPdfData } from './reservation-pdf-data'
 import { bookingVatOptions, computeRoomBookingTotals } from './booking-totals'
 
@@ -110,6 +114,8 @@ export async function buildReservationDocumentHtml(data: ReservationPdfData): Pr
         <p style="margin:0 0 4px"><span style="color:#64748b">Phone:</span> ${esc(data.guestPhone)}</p>
         ${data.guestEmail ? `<p style="margin:0 0 4px"><span style="color:#64748b">Email:</span> ${esc(data.guestEmail)}</p>` : ''}
         ${data.guestAddress ? `<p style="margin:0 0 4px"><span style="color:#64748b">Address:</span> ${esc(data.guestAddress)}</p>` : ''}
+        ${data.guestNationality ? `<p style="margin:0 0 4px"><span style="color:#64748b">Nationality:</span> ${esc(data.guestNationality)}</p>` : ''}
+        ${data.guestRegistrationNumber ? `<p style="margin:0 0 4px"><span style="color:#64748b">Registration no.:</span> ${esc(data.guestRegistrationNumber)}</p>` : ''}
         <p style="margin:0 0 4px"><span style="color:#64748b">ID:</span> ${esc(idTypeLabel(data.idType))}</p>
         ${data.idNumber ? `<p style="margin:0"><span style="color:#64748b">ID no.:</span> ${esc(data.idNumber)}</p>` : ''}
       </div>
@@ -118,7 +124,8 @@ export async function buildReservationDocumentHtml(data: ReservationPdfData): Pr
         <p style="margin:0 0 4px"><span style="color:#64748b">Room:</span> ${esc(data.roomNumber)} (${esc(data.roomType)})</p>
         <p style="margin:0 0 4px"><span style="color:#64748b">Check-in:</span> ${esc(format(new Date(data.checkIn), 'dd MMM yyyy'))}</p>
         <p style="margin:0 0 4px"><span style="color:#64748b">Check-out:</span> ${esc(format(new Date(data.checkOut), 'dd MMM yyyy'))}</p>
-        <p style="margin:0"><span style="color:#64748b">Guests:</span> ${data.adults} adult(s), ${data.children} child(ren)</p>
+        <p style="margin:0 0 4px"><span style="color:#64748b">Guests:</span> ${data.adults} adult(s), ${data.children} child(ren)</p>
+        <p style="margin:0"><span style="color:#64748b">Meal plan:</span> ${esc(data.mealPlan ?? formatReservationMealPlan(data.withMeal))}</p>
       </div>
     </section>
 

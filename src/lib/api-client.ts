@@ -43,19 +43,30 @@ export function getAuthHeaders(includeJson = true): HeadersInit {
   return includeJson ? { 'Content-Type': 'application/json' } : {};
 }
 
+type ApiErrorBody = { success?: boolean; error?: string; message?: string; code?: string }
+
 async function parseJsonResponse<T>(res: Response, path: string): Promise<T> {
-  if (res.status === 401 && !path.includes('/auth/login')) {
-    let body: { code?: string } = {};
-    try {
-      body = await res.clone().json();
-    } catch {
-      // ignore
+  let body: ApiErrorBody = {}
+  try {
+    body = (await res.json()) as ApiErrorBody
+  } catch {
+    if (!res.ok) {
+      throw new Error(res.statusText || `Request failed (${res.status})`)
     }
+    throw new Error('Invalid server response')
+  }
+
+  if (res.status === 401 && !path.includes('/auth/login')) {
     if (body.code === 'SESSION_EXPIRED' || res.status === 401) {
-      redirectToLoginAfterExpiry('unauthorized');
+      redirectToLoginAfterExpiry('unauthorized')
     }
   }
-  return res.json() as Promise<T>;
+
+  if (!res.ok) {
+    throw new Error(body.error || body.message || res.statusText || `Request failed (${res.status})`)
+  }
+
+  return body as T
 }
 
 export class ApiClient {

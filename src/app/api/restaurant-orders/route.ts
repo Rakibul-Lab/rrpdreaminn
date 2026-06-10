@@ -7,8 +7,8 @@ import {
   paginatedResponse,
   notFoundResponse,
   logActivity,
-  generateOrderNumber,
 } from '@/lib/api-utils';
+import { generateRestaurantOrderNumber } from '@/lib/restaurant-order-number';
 import { getRestaurantVatPercent } from '@/lib/app-settings';
 import { Prisma, RoleType } from '@prisma/client';
 
@@ -42,9 +42,11 @@ export async function GET(request: NextRequest) {
     const orderType = searchParams.get('orderType');
     const dateFrom = searchParams.get('dateFrom');
     const dateTo = searchParams.get('dateTo');
+    const todayOnly = searchParams.get('today') === '1';
     const roomId = searchParams.get('roomId');
+    const sort = searchParams.get('sort') === 'asc' ? 'asc' : 'desc';
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
-    const limit = Math.max(1, Math.min(100, parseInt(searchParams.get('limit') || '20')));
+    const limit = Math.max(1, Math.min(5000, parseInt(searchParams.get('limit') || '20')));
 
     const where: Prisma.RestaurantOrderWhereInput = {};
 
@@ -60,13 +62,30 @@ export async function GET(request: NextRequest) {
       where.roomId = roomId;
     }
 
-    if (dateFrom || dateTo) {
-      where.createdAt = {};
+    if (todayOnly) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      where.createdAt = { gte: today, lt: tomorrow };
+    } else if (dateFrom || dateTo) {
+      const createdAt: Prisma.DateTimeFilter = {};
       if (dateFrom) {
-        (where.createdAt as Prisma.DateTimeFilter).gte = new Date(dateFrom);
+        const start = new Date(dateFrom);
+        if (!Number.isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          createdAt.gte = start;
+        }
       }
       if (dateTo) {
-        (where.createdAt as Prisma.DateTimeFilter).lte = new Date(dateTo);
+        const end = new Date(dateTo);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          createdAt.lte = end;
+        }
+      }
+      if (createdAt.gte || createdAt.lte) {
+        where.createdAt = createdAt;
       }
     }
 
@@ -105,6 +124,12 @@ export async function GET(request: NextRequest) {
           email: true,
         },
       },
+      waiter: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
     };
 
     // HOTEL_STAFF and ADMIN can see booking with customer details
@@ -134,7 +159,7 @@ export async function GET(request: NextRequest) {
       db.restaurantOrder.findMany({
         where,
         include,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: sort },
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -164,6 +189,7 @@ export async function POST(request: NextRequest) {
       orderType,
       roomId,
       tableId,
+      waiterId,
       customerName,
       customerPhone,
       notes,
@@ -199,6 +225,27 @@ export async function POST(request: NextRequest) {
     if (orderType === 'ROOM_SERVICE') {
       if (!roomId) {
         return errorResponse('Room ID is required for room service orders');
+      }
+      if (!waiterId) {
+        return errorResponse('Waiter is required for room service orders');
+      }
+      if (!tableId) {
+        return errorResponse('Table is required for room service orders');
+      }
+
+      const waiter = await db.restaurantWaiter.findFirst({
+        where: {
+          id: waiterId,
+          active: true,
+        },
+      });
+      if (!waiter) {
+        return errorResponse('Selected waiter is not valid');
+      }
+
+      const serviceTable = await db.restaurantTable.findUnique({ where: { id: tableId } });
+      if (!serviceTable) {
+        return notFoundResponse('Restaurant table');
       }
 
       // Validate that the room is currently OCCUPIED
@@ -284,18 +331,19 @@ export async function POST(request: NextRequest) {
     const vatAmount = ((subtotal - discountAmount) * vatRate) / 100;
     const totalAmount = subtotal - discountAmount + vatAmount;
 
-    // Generate order number
-    const orderNumber = generateOrderNumber();
-
     // Create order with items in a transaction
     const order = await db.$transaction(async (tx) => {
+      const orderNumber = await generateRestaurantOrderNumber(tx);
+
       const newOrder = await tx.restaurantOrder.create({
         data: {
           orderNumber,
           orderType,
           status: 'PENDING',
           roomId: orderType === 'ROOM_SERVICE' ? roomId : null,
-          tableId: orderType === 'DINE_IN' ? tableId : null,
+          tableId:
+            orderType === 'DINE_IN' || orderType === 'ROOM_SERVICE' ? tableId : null,
+          waiterId: orderType === 'ROOM_SERVICE' ? waiterId : null,
           bookingId,
           customerName: orderType === 'TAKEAWAY' ? customerName : null,
           customerPhone: orderType === 'TAKEAWAY' ? customerPhone : null,
@@ -337,6 +385,12 @@ export async function POST(request: NextRequest) {
               status: true,
             },
           },
+          waiter: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
         },
       });
 
@@ -366,7 +420,7 @@ export async function POST(request: NextRequest) {
       authResult.id,
       'CREATE_RESTAURANT_ORDER',
       'restaurant',
-      `Created order ${orderNumber} (${orderType}), total: ${totalAmount}`
+      `Created order ${order.orderNumber} (${orderType}), total: ${totalAmount}`
     );
 
     return successResponse(order, 'Order created successfully', 201);

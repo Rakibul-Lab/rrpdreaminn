@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { EmailInput } from '@/components/ui/email-input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -17,12 +18,49 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { Plus, Search, Phone, Mail, MapPin } from 'lucide-react';
+import {
+  Plus,
+  Search,
+  Phone,
+  Mail,
+  MapPin,
+  History,
+  FileDown,
+  Loader2,
+  FileSpreadsheet,
+  CalendarRange,
+} from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatusBadge } from '../shared/StatusBadge';
+import { NationalityField } from '../shared/NationalityField';
 import { getPaginationPages } from '@/lib/pagination-pages';
 import { cn } from '@/lib/utils';
 import { useHotelTimes } from '@/hooks/use-hotel-times';
+import { formatGuestId, getIdTypeOptionsForNationality } from '@/lib/id-type-label';
+import { formatListBookingCheckIn, formatListBookingCheckOut } from '@/lib/hotel-times';
+import { downloadGuestHistoryPdf } from '@/lib/guest-history-export';
+import { useAuthStore, canAccessAdmin } from '@/lib/auth-store';
+import {
+  BOOKING_DATE_PRESET_OPTIONS,
+  buildGuestsExportFilterLabels,
+  resolveBookingDateRange,
+  type BookingDatePreset,
+} from '@/lib/booking-date-filter';
+import {
+  buildGuestsExportQuery,
+  downloadGuestsExcel,
+  downloadGuestsPdf,
+  type GuestExportRecord,
+} from '@/lib/guests-export';
+
+interface GuestStay {
+  checkIn: string;
+  checkOut: string;
+  actualCheckIn?: string | null;
+  actualCheckOut?: string | null;
+  status: string;
+  roomNumber?: string | null;
+}
 
 interface Customer {
   id: string;
@@ -32,17 +70,25 @@ interface Customer {
   address?: string | null;
   idType?: string | null;
   idNumber?: string | null;
+  nationality?: string | null;
   notes?: string | null;
   createdAt: string;
+  stay?: GuestStay | null;
 }
 
 export function CustomersPage() {
-  const { formatCheckIn, formatCheckOut } = useHotelTimes();
+  const { times, formatCheckIn, formatCheckOut } = useHotelTimes();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = canAccessAdmin(user?.role);
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [datePreset, setDatePreset] = useState<BookingDatePreset>('today');
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
+  const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -51,27 +97,51 @@ export function CustomersPage() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [searchInput]);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editCustomer, setEditCustomer] = useState<Customer | null>(null);
-  const [detailCustomer, setDetailCustomer] = useState<Customer | null>(null);
 
-  // Form state
+  const dateRange = useMemo(
+    () => resolveBookingDateRange(datePreset, customDateFrom, customDateTo),
+    [datePreset, customDateFrom, customDateTo]
+  );
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [historyCustomer, setHistoryCustomer] = useState<Customer | null>(null);
+  const [exportingHistoryPdf, setExportingHistoryPdf] = useState(false);
+
   const [formName, setFormName] = useState('');
   const [formPhone, setFormPhone] = useState('');
   const [formEmail, setFormEmail] = useState('');
+  const [formEmailBlocking, setFormEmailBlocking] = useState(false);
+  const [formEmailVerificationToken, setFormEmailVerificationToken] = useState<string | null>(null);
   const [formAddress, setFormAddress] = useState('');
+  const [formNationality, setFormNationality] = useState('');
   const [formIdType, setFormIdType] = useState('');
   const [formIdNumber, setFormIdNumber] = useState('');
   const [formNotes, setFormNotes] = useState('');
 
+  const idTypeOptions = useMemo(
+    () => getIdTypeOptionsForNationality(formNationality),
+    [formNationality]
+  );
+
+  const handleNationalityChange = useCallback((value: string) => {
+    setFormNationality(value);
+    setFormIdType((current) => {
+      const options = getIdTypeOptionsForNationality(value);
+      if (current && !options.some((opt) => opt.value === current)) return '';
+      return current;
+    });
+  }, []);
+
   const buildQuery = () => {
     const params: string[] = [`page=${page}`, `limit=${pageSize}`];
     if (searchQuery) params.push(`search=${encodeURIComponent(searchQuery)}`);
+    if (dateRange.dateFrom) params.push(`dateFrom=${dateRange.dateFrom}`);
+    if (dateRange.dateTo) params.push(`dateTo=${dateRange.dateTo}`);
     return `/customers?${params.join('&')}`;
   };
 
   const { data, isLoading } = useQuery({
-    queryKey: ['customers', searchQuery, page, pageSize],
+    queryKey: ['customers', searchQuery, datePreset, customDateFrom, customDateTo, page, pageSize],
     queryFn: () => api.get<{ success: boolean; data: Customer[]; meta: { total: number; page: number; totalPages: number } }>(buildQuery()),
   });
 
@@ -82,71 +152,50 @@ export function CustomersPage() {
   const rangeEnd = Math.min(page * pageSize, total);
   const pageNumbers = getPaginationPages(page, totalPages);
 
-  const { data: customerBookings } = useQuery({
-    queryKey: ['customer-bookings', detailCustomer?.id],
-    queryFn: () => api.get(`/bookings?customerId=${detailCustomer?.id}&limit=50`),
-    enabled: !!detailCustomer?.id,
+  const { data: customerBookings, isLoading: historyBookingsLoading } = useQuery({
+    queryKey: ['customer-bookings', historyCustomer?.id],
+    queryFn: () => api.get(`/bookings?customerId=${historyCustomer?.id}&limit=50`),
+    enabled: !!historyCustomer?.id,
   });
 
   const createMutation = useMutation({
     mutationFn: (body: any) => api.post('/customers', body),
     onSuccess: (res: any) => {
       if (!res?.success) {
-        toast.error(res?.error || res?.message || 'Failed to create customer');
+        toast.error(res?.error || res?.message || 'Failed to create guest');
         return;
       }
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       if (res?.message?.includes('already exists')) {
         toast.info(res.message);
       } else {
-        toast.success('Customer created successfully');
+        toast.success('Guest created successfully');
       }
       closeDialog();
     },
-    onError: () => toast.error('Failed to create customer'),
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: (body: any) => api.put(`/customers/${body.id}`, body),
-    onSuccess: (res: any) => {
-      if (!res?.success) {
-        toast.error(res?.error || res?.message || 'Failed to update customer');
-        return;
-      }
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      toast.success('Customer updated successfully');
-      closeDialog();
-    },
-    onError: () => toast.error('Failed to update customer'),
+    onError: () => toast.error('Failed to create guest'),
   });
 
   const closeDialog = () => {
     setDialogOpen(false);
-    setEditCustomer(null);
     setFormName('');
     setFormPhone('');
     setFormEmail('');
+    setFormEmailVerificationToken(null);
     setFormAddress('');
+    setFormNationality('');
     setFormIdType('');
     setFormIdNumber('');
     setFormNotes('');
   };
 
-  const openEditDialog = (customer: Customer) => {
-    setEditCustomer(customer);
-    setFormName(customer.name);
-    setFormPhone(customer.phone);
-    setFormEmail(customer.email || '');
-    setFormAddress(customer.address || '');
-    setFormIdType(customer.idType || '');
-    setFormIdNumber(customer.idNumber || '');
-    setFormNotes(customer.notes || '');
-    setDialogOpen(true);
-  };
-
   const handleSubmit = () => {
     if (!formName || !formPhone) {
-      toast.error('Name and phone are required');
+      toast.error('Name and mobile are required');
+      return;
+    }
+    if (formEmailBlocking) {
+      toast.error('Enter a valid email address');
       return;
     }
 
@@ -154,45 +203,226 @@ export function CustomersPage() {
       name: formName,
       phone: formPhone,
       email: formEmail || null,
+      emailVerificationToken: formEmailVerificationToken || undefined,
       address: formAddress || null,
+      nationality: formNationality || null,
       idType: formIdType || null,
       idNumber: formIdNumber || null,
       notes: formNotes || null,
     };
 
-    if (editCustomer) {
-      updateMutation.mutate({ id: editCustomer.id, ...payload });
-    } else {
-      createMutation.mutate(payload);
+    createMutation.mutate(payload);
+  };
+
+  const formatStayCheckIn = (stay: GuestStay | null | undefined) => {
+    if (!stay) return '—';
+    return formatListBookingCheckIn(stay, times, true);
+  };
+
+  const formatStayCheckOut = (stay: GuestStay | null | undefined) => {
+    if (!stay) return '—';
+    return formatListBookingCheckOut(stay, times, true);
+  };
+
+  const historyBookings = ((customerBookings as any)?.data || []) as Array<{
+    id: string
+    confirmationNumber?: string | null
+    status: string
+    checkIn: string
+    checkOut: string
+    actualCheckIn?: string | null
+    actualCheckOut?: string | null
+    totalRoomCharge: number
+    totalWithVat?: number
+    dueAmount?: number
+    room?: { roomNumber: string; type?: { name: string } }
+  }>;
+
+  const handleExportHistoryPdf = async () => {
+    if (!historyCustomer) return;
+    setExportingHistoryPdf(true);
+    const toastId = toast.loading('Generating PDF…');
+    try {
+      await downloadGuestHistoryPdf(historyCustomer, historyBookings, times);
+      toast.success('Guest history exported to PDF', { id: toastId });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to export PDF', { id: toastId });
+    } finally {
+      setExportingHistoryPdf(false);
+    }
+  };
+
+  const buildExportMeta = () => ({
+    filters: buildGuestsExportFilterLabels({
+      datePreset,
+      customDateFrom,
+      customDateTo,
+      search: searchQuery,
+    }),
+    exportedAt: new Date(),
+    generatedBy: user
+      ? { name: user.name, email: user.email, role: user.role }
+      : undefined,
+  });
+
+  const fetchGuestsForExport = async () => {
+    const url = buildGuestsExportQuery({
+      search: searchQuery,
+      dateFrom: dateRange.dateFrom,
+      dateTo: dateRange.dateTo,
+    });
+    const res = await api.get<{ success: boolean; data: GuestExportRecord[] }>(url);
+    if (!res?.success) {
+      throw new Error('Failed to fetch guests for export');
+    }
+    return res.data ?? [];
+  };
+
+  const handleExportExcel = async () => {
+    setExporting('excel');
+    const toastId = toast.loading('Preparing Excel export…');
+    try {
+      const rows = await fetchGuestsForExport();
+      if (!rows.length) {
+        toast.error('No guests match the current filters', { id: toastId });
+        return;
+      }
+      await downloadGuestsExcel(rows, times, buildExportMeta());
+      toast.success(`Exported ${rows.length} guest(s) to Excel`, { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    setExporting('pdf');
+    const toastId = toast.loading('Preparing PDF export…');
+    try {
+      const rows = await fetchGuestsForExport();
+      if (!rows.length) {
+        toast.error('No guests match the current filters', { id: toastId });
+        return;
+      }
+      await downloadGuestsPdf(rows, times, buildExportMeta());
+      toast.success(`Exported ${rows.length} guest(s) to PDF`, { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExporting(null);
     }
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold">Customers</h2>
-          <p className="text-sm text-muted-foreground">{total} total customers</p>
+          <h2 className="text-xl font-semibold">Guest Management</h2>
+          <p className="text-sm text-muted-foreground">{total} guests</p>
         </div>
-        <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => setDialogOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Customer
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => void handleExportExcel()}
+            disabled={!!exporting || isLoading}
+          >
+            {exporting === 'excel' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+            )}
+            Export Excel
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleExportPdf()}
+            disabled={!!exporting || isLoading}
+          >
+            {exporting === 'pdf' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileDown className="w-4 h-4 mr-2" />
+            )}
+            Export PDF
+          </Button>
+          {isAdmin && (
+            <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => setDialogOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              Add Guest
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-xs">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search by name, phone, or email..."
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          className="pl-9"
-        />
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search name, mobile, email, ID, address, nationality…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <Select
+          value={datePreset}
+          onValueChange={(v) => {
+            setDatePreset(v as BookingDatePreset);
+            setPage(1);
+          }}
+        >
+          <SelectTrigger className="w-44">
+            <CalendarRange className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+            <SelectValue placeholder="Date" />
+          </SelectTrigger>
+          <SelectContent>
+            {BOOKING_DATE_PRESET_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {datePreset === 'custom' && (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="guest-date-from" className="text-xs text-muted-foreground">
+                From
+              </Label>
+              <Input
+                id="guest-date-from"
+                type="date"
+                value={customDateFrom}
+                onChange={(e) => {
+                  setCustomDateFrom(e.target.value);
+                  setPage(1);
+                }}
+                className="w-40"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="guest-date-to" className="text-xs text-muted-foreground">
+                To
+              </Label>
+              <Input
+                id="guest-date-to"
+                type="date"
+                value={customDateTo}
+                min={customDateFrom || undefined}
+                onChange={(e) => {
+                  setCustomDateTo(e.target.value);
+                  setPage(1);
+                }}
+                className="w-40"
+              />
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Guests table */}
       {isLoading ? (
         <Card>
           <CardContent className="space-y-3 p-4">
@@ -204,52 +434,91 @@ export function CustomersPage() {
       ) : (
         <div className="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
           <div className="max-h-[min(70vh,720px)] overflow-auto custom-scrollbar">
-            <table className="bookings-sticky-table w-full min-w-[720px] text-sm">
+            <table className="bookings-sticky-table bookings-sticky-table--in-scroll guests-list-table w-full">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="p-3 text-left font-medium">Name</th>
-                  <th className="p-3 text-left font-medium">Phone</th>
-                  <th className="p-3 text-left font-medium">Address</th>
-                  <th className="p-3 text-left font-medium">Added</th>
-                  <th className="p-3 text-left font-medium">Actions</th>
+                  <th className="col-g-name text-left font-medium">Guest name</th>
+                  <th className="col-g-email text-left font-medium">Email</th>
+                  <th className="col-g-mobile text-left font-medium">Mobile</th>
+                  <th className="col-g-id text-left font-medium">NID / Passport / License</th>
+                  <th className="col-g-address text-left font-medium">Address</th>
+                  <th className="col-g-nationality text-left font-medium">Nationality</th>
+                  <th className="col-g-room text-left font-medium">Room</th>
+                  <th className="col-g-checkin text-left font-medium">Check-in</th>
+                  <th className="col-g-checkout text-left font-medium">Check-out</th>
+                  <th className="col-g-actions text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-background">
                 {customers.map((customer) => (
                   <tr key={customer.id} className="border-b border-border/60 hover:bg-muted/40">
-                    <td className="p-3">
-                      <p className="font-medium">{customer.name}</p>
-                      {customer.email && (
-                        <p className="text-xs text-muted-foreground">{customer.email}</p>
-                      )}
+                    <td className="col-g-name">
+                      <p className="gl-truncate font-medium" title={customer.name}>
+                        {customer.name}
+                      </p>
                     </td>
-                    <td className="p-3">
-                      <span className="flex items-center gap-1">
+                    <td className="col-g-email">
+                      <p className="gl-truncate text-muted-foreground" title={customer.email || undefined}>
+                        {customer.email || '—'}
+                      </p>
+                    </td>
+                    <td className="col-g-mobile">
+                      <span className="gl-truncate inline-flex items-center gap-1 max-w-full" title={customer.phone}>
                         <Phone className="w-3 h-3 text-muted-foreground shrink-0" />
                         {customer.phone}
                       </span>
                     </td>
-                    <td className="p-3 text-muted-foreground text-xs max-w-[200px] truncate">
-                      {customer.address || '—'}
+                    <td className="col-g-id">
+                      <p
+                        className="gl-truncate text-xs"
+                        title={formatGuestId(customer.idType, customer.idNumber)}
+                      >
+                        {formatGuestId(customer.idType, customer.idNumber)}
+                      </p>
                     </td>
-                    <td className="p-3 text-xs">
-                      {new Date(customer.createdAt).toLocaleDateString()}
+                    <td className="col-g-address">
+                      <p className="gl-truncate text-muted-foreground text-xs" title={customer.address || undefined}>
+                        {customer.address || '—'}
+                      </p>
                     </td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => openEditDialog(customer)}>
-                          Edit
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setDetailCustomer(customer)}>
-                          View
-                        </Button>
-                      </div>
+                    <td className="col-g-nationality">
+                      <p className="gl-truncate" title={customer.nationality || undefined}>
+                        {customer.nationality || '—'}
+                      </p>
+                    </td>
+                    <td className="col-g-room">
+                      <p className="gl-truncate font-medium" title={customer.stay?.roomNumber || undefined}>
+                        {customer.stay?.roomNumber || '—'}
+                      </p>
+                    </td>
+                    <td
+                      className="col-g-checkin"
+                      title={customer.stay ? formatStayCheckIn(customer.stay) : undefined}
+                    >
+                      {formatStayCheckIn(customer.stay)}
+                    </td>
+                    <td
+                      className="col-g-checkout"
+                      title={customer.stay ? formatStayCheckOut(customer.stay) : undefined}
+                    >
+                      {formatStayCheckOut(customer.stay)}
+                    </td>
+                    <td className="col-g-actions">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 gap-1 px-2 text-xs"
+                        onClick={() => setHistoryCustomer(customer)}
+                      >
+                        <History className="h-3.5 w-3.5" />
+                        History
+                      </Button>
                     </td>
                   </tr>
                 ))}
                 {customers.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="p-8 text-center text-muted-foreground">
+                    <td colSpan={10} className="p-8 text-center text-muted-foreground">
                       No guests found
                     </td>
                   </tr>
@@ -329,29 +598,42 @@ export function CustomersPage() {
         </div>
       )}
 
-      {/* Add/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={(open) => { if (!open) closeDialog(); }}>
+      <Dialog open={isAdmin && dialogOpen} onOpenChange={(open) => { if (!open) closeDialog(); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{editCustomer ? 'Edit Customer' : 'Add Customer'}</DialogTitle>
+            <DialogTitle>Add Guest</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Full Name *</Label>
-              <Input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="Customer name" />
+              <Input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="Guest name" />
             </div>
             <div className="space-y-2">
-              <Label>Phone Number *</Label>
+              <Label>Mobile *</Label>
               <Input value={formPhone} onChange={(e) => setFormPhone(e.target.value)} placeholder="+880..." />
             </div>
             <div className="space-y-2">
               <Label>Email</Label>
-              <Input type="email" value={formEmail} onChange={(e) => setFormEmail(e.target.value)} placeholder="email@example.com" />
+              <EmailInput
+                value={formEmail}
+                onChange={setFormEmail}
+                optional
+                placeholder="email@example.com"
+                onValidationChange={(result) => {
+                  setFormEmailBlocking(result.isBlocking);
+                  setFormEmailVerificationToken(result.verificationToken ?? null);
+                }}
+              />
             </div>
             <div className="space-y-2">
               <Label>Address</Label>
               <Input value={formAddress} onChange={(e) => setFormAddress(e.target.value)} placeholder="Address" />
             </div>
+            <NationalityField
+              value={formNationality}
+              onChange={handleNationalityChange}
+              placeholder="Type or select nationality…"
+            />
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>ID Type</Label>
@@ -360,15 +642,17 @@ export function CustomersPage() {
                     <SelectValue placeholder="Select" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="passport">Passport</SelectItem>
-                    <SelectItem value="national_id">National ID</SelectItem>
-                    <SelectItem value="driving_license">Driving License</SelectItem>
+                    {idTypeOptions.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
                 <Label>ID Number</Label>
-                <Input value={formIdNumber} onChange={(e) => setFormIdNumber(e.target.value)} placeholder="ID Number" />
+                <Input value={formIdNumber} onChange={(e) => setFormIdNumber(e.target.value)} placeholder="ID number" />
               </div>
             </div>
             <div className="space-y-2">
@@ -381,55 +665,75 @@ export function CustomersPage() {
             <Button
               className="bg-amber-600 hover:bg-amber-700 text-white"
               onClick={handleSubmit}
-              disabled={createMutation.isPending || updateMutation.isPending}
+              disabled={createMutation.isPending || formEmailBlocking}
             >
-              {(createMutation.isPending || updateMutation.isPending) ? 'Saving...' : editCustomer ? 'Update' : 'Create'}
+              {createMutation.isPending ? 'Saving...' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Customer Detail Dialog */}
-      <Dialog open={!!detailCustomer} onOpenChange={() => setDetailCustomer(null)}>
+      <Dialog open={!!historyCustomer} onOpenChange={() => setHistoryCustomer(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Customer Details</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="h-5 w-5 text-amber-600" />
+              Guest History
+            </DialogTitle>
           </DialogHeader>
-          {detailCustomer && (
+          {historyCustomer && (
             <div className="space-y-4">
               <div className="space-y-2">
-                <h3 className="text-lg font-semibold">{detailCustomer.name}</h3>
+                <h3 className="text-lg font-semibold">{historyCustomer.name}</h3>
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Phone className="w-4 h-4" />
-                  {detailCustomer.phone}
+                  {historyCustomer.phone}
                 </div>
-                {detailCustomer.email && (
+                {historyCustomer.email && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Mail className="w-4 h-4" />
-                    {detailCustomer.email}
+                    {historyCustomer.email}
                   </div>
                 )}
-                {detailCustomer.address && (
+                {historyCustomer.address && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <MapPin className="w-4 h-4" />
-                    {detailCustomer.address}
+                    {historyCustomer.address}
                   </div>
                 )}
+                {historyCustomer.nationality && (
+                  <p className="text-sm text-muted-foreground">
+                    Nationality: <span className="text-foreground">{historyCustomer.nationality}</span>
+                  </p>
+                )}
               </div>
-              {detailCustomer.idType && (
+              {(historyCustomer.idType || historyCustomer.idNumber) && (
                 <div className="text-sm">
                   <span className="text-muted-foreground">ID: </span>
-                  <span className="font-medium">{detailCustomer.idType} - {detailCustomer.idNumber}</span>
+                  <span className="font-medium">
+                    {formatGuestId(historyCustomer.idType, historyCustomer.idNumber)}
+                  </span>
+                </div>
+              )}
+              {historyCustomer.stay && (
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
+                  <p>
+                    <span className="text-muted-foreground">Current check-in: </span>
+                    {formatStayCheckIn(historyCustomer.stay)}
+                  </p>
+                  <p>
+                    <span className="text-muted-foreground">Current check-out: </span>
+                    {formatStayCheckOut(historyCustomer.stay)}
+                  </p>
                 </div>
               )}
 
-              {/* Booking History */}
               <div>
-                <h4 className="text-sm font-semibold mb-2">Booking History</h4>
+                <h4 className="text-sm font-semibold mb-2">Reservation history</h4>
                 <div className="max-h-48 overflow-y-auto custom-scrollbar">
-                  {((customerBookings as any)?.data || []).length > 0 ? (
+                  {historyBookings.length > 0 ? (
                     <div className="space-y-2">
-                      {((customerBookings as any)?.data || []).map((booking: any) => (
+                      {historyBookings.map((booking) => (
                         <div key={booking.id} className="flex items-center justify-between p-2 bg-muted/50 rounded-lg text-sm">
                           <div>
                             <p className="font-medium">Room {booking.room?.roomNumber}</p>
@@ -451,10 +755,25 @@ export function CustomersPage() {
               </div>
             </div>
           )}
+          <DialogFooter className="gap-2 sm:gap-3">
+            <Button variant="outline" onClick={() => setHistoryCustomer(null)}>
+              Close
+            </Button>
+            <Button
+              className="bg-amber-600 hover:bg-amber-700 text-white gap-2"
+              onClick={() => void handleExportHistoryPdf()}
+              disabled={!historyCustomer || exportingHistoryPdf || historyBookingsLoading}
+            >
+              {exportingHistoryPdf ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <FileDown className="h-4 w-4" />
+              )}
+              Export PDF
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   );
 }
-
-

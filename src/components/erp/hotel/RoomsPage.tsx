@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
-import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,13 +17,26 @@ import {
 import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { Grid3X3, List, Plus, BedDouble, Search } from 'lucide-react';
+import { FileDown, Grid3X3, List, Loader2, Plus, Search } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/lib/auth-store';
+import { downloadRoomsPdf, type RoomExportRecord } from '@/lib/rooms-export';
+
+const ROOMS_PER_ROW = 8;
+
+function chunkRooms<T>(items: T[], size: number): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    rows.push(items.slice(i, i + size));
+  }
+  return rows;
+}
 
 interface Room {
   id: string;
   roomNumber: string;
   floor: number;
-  status: 'AVAILABLE' | 'OCCUPIED' | 'CLEANING' | 'MAINTENANCE';
+  status: 'AVAILABLE' | 'RESERVED' | 'OCCUPIED' | 'CLEANING' | 'MAINTENANCE';
   typeId: string;
   type: {
     id: string;
@@ -49,8 +61,10 @@ interface HousekeepingTaskLite {
 
 export function RoomsPage() {
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
   const FLOOR_OPTIONS = [8, 9, 10];
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [floorFilter, setFloorFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -163,15 +177,115 @@ export function RoomsPage() {
     }
   };
 
-  const getStatusBorderColor = (status: string) => {
+  const getStatusContainerClasses = (status: string) => {
     switch (status) {
-      case 'AVAILABLE': return 'border-l-emerald-500';
-      case 'OCCUPIED': return 'border-l-red-500';
-      case 'CLEANING': return 'border-l-amber-500';
-      case 'IN_PROGRESS': return 'border-l-orange-500';
-      case 'MAINTENANCE': return 'border-l-muted-foreground';
-      default: return 'border-l-border';
+      case 'AVAILABLE':
+        return 'bg-emerald-500 border-emerald-600 text-white hover:bg-emerald-600';
+      case 'RESERVED':
+        return 'bg-sky-500 border-sky-600 text-white hover:bg-sky-600';
+      case 'OCCUPIED':
+        return 'bg-yellow-400 border-yellow-500 text-yellow-950 hover:bg-yellow-500';
+      case 'CLEANING':
+      case 'IN_PROGRESS':
+        return 'bg-red-500 border-red-600 text-white hover:bg-red-600';
+      case 'MAINTENANCE':
+        return 'bg-slate-500 border-slate-600 text-white hover:bg-slate-600';
+      default:
+        return 'bg-muted border-border text-foreground';
     }
+  };
+
+  const getDisplayStatus = (room: Room) =>
+    room.status === 'CLEANING' && roomsWithCleaningInProgress.has(room.id)
+      ? 'IN_PROGRESS'
+      : room.status;
+
+  const floorGroups = [...new Set(filteredRooms.map((r) => r.floor))]
+    .sort((a, b) => a - b)
+    .map((floor) => ({
+      floor,
+      rows: chunkRooms(
+        filteredRooms.filter((r) => r.floor === floor),
+        ROOMS_PER_ROW
+      ),
+    }));
+
+  const buildExportRows = (): RoomExportRecord[] =>
+    filteredRooms.map((room) => ({
+      roomNumber: room.roomNumber,
+      floor: room.floor,
+      status: room.status,
+      displayStatus: getDisplayStatus(room),
+      typeName: room.type?.name ?? '',
+      basePrice: room.type?.basePrice ?? 0,
+    }));
+
+  const buildExportMeta = () => ({
+    exportedAt: new Date(),
+    generatedBy: user
+      ? { name: user.name, email: user.email }
+      : undefined,
+    filters: {
+      status: statusFilter === 'all' ? 'All status' : statusFilter.replace(/_/g, ' '),
+      floor: floorFilter === 'all' ? 'All floors' : `Floor ${floorFilter}`,
+      type:
+        typeFilter === 'all'
+          ? 'All types'
+          : roomTypes.find((rt: RoomType) => rt.id === typeFilter)?.name ?? typeFilter,
+      search: search.trim() || '—',
+    },
+  });
+
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    const toastId = toast.loading('Preparing PDF export…');
+    try {
+      const rows = buildExportRows();
+      if (!rows.length) {
+        toast.error('No rooms match the current filters', { id: toastId });
+        return;
+      }
+      await downloadRoomsPdf(rows, buildExportMeta());
+      toast.success(`Exported ${rows.length} room(s) to PDF`, { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export failed';
+      toast.error(msg, { id: toastId });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const renderRoomTile = (room: Room) => {
+    const displayStatus = getDisplayStatus(room);
+    const isLightText = displayStatus === 'OCCUPIED';
+
+    return (
+      <button
+        key={room.id}
+        type="button"
+        onClick={() => openEditDialog(room)}
+        className={cn(
+          'flex min-h-[92px] w-full flex-col justify-between rounded-lg border p-3 text-left shadow-sm transition-colors',
+          getStatusContainerClasses(displayStatus)
+        )}
+      >
+        <div className="flex items-start justify-between gap-1">
+          <p className="text-lg font-bold leading-none">{room.roomNumber}</p>
+          <span
+            className={cn(
+              'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+              isLightText ? 'bg-yellow-600/20 text-yellow-950' : 'bg-black/15 text-inherit'
+            )}
+          >
+            {displayStatus === 'IN_PROGRESS' ? 'Cleaning' : displayStatus.replace('_', ' ')}
+          </span>
+        </div>
+        <div className={cn('space-y-0.5 text-xs', isLightText ? 'text-yellow-900/80' : 'text-white/90')}>
+          <p className="font-medium">{room.type?.name}</p>
+          <p>৳{room.type?.basePrice?.toLocaleString()}/night</p>
+        </div>
+      </button>
+    );
   };
 
   return (
@@ -182,10 +296,24 @@ export function RoomsPage() {
           <h2 className="text-xl font-semibold">Rooms</h2>
           <p className="text-sm text-muted-foreground">{filteredRooms.length} rooms found</p>
         </div>
-        <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => setAddDialogOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Room
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => void handleExportPdf()}
+            disabled={exportingPdf || isLoading}
+          >
+            {exportingPdf ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <FileDown className="w-4 h-4 mr-2" />
+            )}
+            Export PDF
+          </Button>
+          <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => setAddDialogOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Room
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -206,6 +334,7 @@ export function RoomsPage() {
           <SelectContent>
             <SelectItem value="all">All Status</SelectItem>
             <SelectItem value="AVAILABLE">Available</SelectItem>
+            <SelectItem value="RESERVED">Reserved</SelectItem>
             <SelectItem value="OCCUPIED">Occupied</SelectItem>
             <SelectItem value="CLEANING">Cleaning</SelectItem>
             <SelectItem value="MAINTENANCE">Maintenance</SelectItem>
@@ -255,39 +384,57 @@ export function RoomsPage() {
 
       {/* Content */}
       {isLoading ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <Skeleton key={i} className="h-32 rounded-lg" />
+        <div className="space-y-4">
+          {Array.from({ length: 2 }).map((_, row) => (
+            <div key={row} className="grid grid-cols-8 gap-2">
+              {Array.from({ length: ROOMS_PER_ROW }).map((_, i) => (
+                <Skeleton key={i} className="h-[92px] rounded-lg" />
+              ))}
+            </div>
           ))}
         </div>
       ) : viewMode === 'grid' ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {filteredRooms.map((room) => (
-            (() => {
-              const displayStatus =
-                room.status === 'CLEANING' && roomsWithCleaningInProgress.has(room.id)
-                  ? 'IN_PROGRESS'
-                  : room.status;
-              return (
-            <Card
-              key={room.id}
-              className={`cursor-pointer border-l-4 ${getStatusBorderColor(displayStatus)} hover:shadow-md transition-shadow`}
-              onClick={() => openEditDialog(room)}
-            >
-              <CardContent className="p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <BedDouble className="w-5 h-5 text-muted-foreground" />
-                  <StatusBadge status={displayStatus} />
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center gap-4 text-xs font-medium">
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-8 rounded bg-emerald-500" />
+              Available
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-8 rounded bg-sky-500" />
+              Reserved
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-8 rounded bg-yellow-400" />
+              Occupied
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-8 rounded bg-red-500" />
+              Cleaning
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-8 rounded bg-slate-500" />
+              Maintenance
+            </span>
+          </div>
+
+          {floorGroups.map(({ floor, rows }) => (
+            <div key={floor} className="space-y-2">
+              <h3 className="text-sm font-semibold text-muted-foreground">Floor {floor}</h3>
+              {rows.map((rowRooms, rowIndex) => (
+                <div
+                  key={`${floor}-${rowIndex}`}
+                  className="grid grid-cols-8 gap-2"
+                >
+                  {rowRooms.map((room) => renderRoomTile(room))}
                 </div>
-                <p className="text-lg font-bold">{room.roomNumber}</p>
-                <p className="text-xs text-muted-foreground">{room.type?.name}</p>
-                <p className="text-xs font-medium text-amber-700 mt-1">৳{room.type?.basePrice?.toLocaleString()}/night</p>
-                <p className="text-xs text-muted-foreground">Floor {room.floor}</p>
-              </CardContent>
-            </Card>
-              );
-            })()
+              ))}
+            </div>
           ))}
+
+          {filteredRooms.length === 0 && (
+            <p className="py-12 text-center text-sm text-muted-foreground">No rooms match your filters.</p>
+          )}
         </div>
       ) : (
         <div className="rounded-lg border max-h-[600px] overflow-y-auto custom-scrollbar">
@@ -305,10 +452,7 @@ export function RoomsPage() {
             <tbody>
               {filteredRooms.map((room) => (
                 (() => {
-                  const displayStatus =
-                    room.status === 'CLEANING' && roomsWithCleaningInProgress.has(room.id)
-                      ? 'IN_PROGRESS'
-                      : room.status;
+                  const displayStatus = getDisplayStatus(room);
                   return (
                 <tr key={room.id} className="border-t hover:bg-muted/30">
                   <td className="p-3 font-medium">{room.roomNumber}</td>
@@ -380,6 +524,7 @@ export function RoomsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="AVAILABLE">Available</SelectItem>
+                    <SelectItem value="RESERVED">Reserved</SelectItem>
                     <SelectItem value="OCCUPIED">Occupied</SelectItem>
                     <SelectItem value="CLEANING">Cleaning</SelectItem>
                     <SelectItem value="MAINTENANCE">Maintenance</SelectItem>

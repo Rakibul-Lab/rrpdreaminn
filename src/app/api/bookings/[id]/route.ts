@@ -8,6 +8,10 @@ import { formatFormOfPayment, getAdvancePaymentMethod } from '@/lib/payment-meth
 import { RoleType } from '@prisma/client';
 import { resolveBookingCheckInOut } from '@/lib/app-settings';
 import { countBookedNights } from '@/lib/booking-stay';
+import { replaceIdDocumentsForBooking } from '@/lib/booking-id-documents';
+import { formatGuestCompany } from '@/lib/reservation-terms';
+import { getCompleteReservationMissingFields } from '@/lib/reservation-completion-fields';
+import { getEmailValidationError } from '@/lib/email-verify-server';
 
 export async function GET(
   request: NextRequest,
@@ -73,23 +77,50 @@ export async function PUT(
     const { id } = await params;
     const body = await request.json();
 
-    const existing = await db.booking.findUnique({ where: { id } });
+    const existing = await db.booking.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        idDocuments: true,
+      },
+    });
     if (!existing) {
       return notFoundResponse('Booking');
     }
 
-    // Don't allow updates to checked-out or cancelled bookings
-    if (existing.status === 'CHECKED_OUT' || existing.status === 'CANCELLED') {
-      return errorResponse('Cannot update a checked-out or cancelled booking');
+    if (existing.status !== 'RESERVED') {
+      return errorResponse('Only reserved bookings can be edited');
+    }
+
+    if (!existing.isInitialReservation) {
+      return errorResponse('Only initial reservations can be edited. Create a new reservation to change a confirmed booking.');
     }
 
     const updateData: Record<string, unknown> = {};
     if (body.adults !== undefined) updateData.adults = parseInt(String(body.adults));
     if (body.children !== undefined) updateData.children = parseInt(String(body.children));
     if (body.notes !== undefined) updateData.notes = body.notes;
-    if (body.status !== undefined) updateData.status = body.status;
+    if (body.company !== undefined) updateData.company = formatGuestCompany(body.company);
+    if (body.withMeal !== undefined) updateData.withMeal = body.withMeal === true;
+    if (body.discountEnabled !== undefined) {
+      updateData.discountEnabled = body.discountEnabled === true;
+    }
+    if (body.discountType !== undefined) {
+      updateData.discountType = body.discountType === 'FIXED' ? 'FIXED' : 'PERCENTAGE';
+    }
+    if (body.discountValue !== undefined) {
+      updateData.discountValue = Math.max(0, parseFloat(String(body.discountValue)) || 0);
+    }
 
-    // If room is being changed, verify it
+    if (body.vatPercent !== undefined) {
+      const parsed = parseFloat(String(body.vatPercent));
+      if (!Number.isNaN(parsed) && parsed >= 0) updateData.vatPercent = parsed;
+    }
+
+    if (body.isInitialReservation === false) {
+      updateData.isInitialReservation = false;
+    }
+
     if (body.roomId && body.roomId !== existing.roomId) {
       const room = await db.room.findUnique({ where: { id: body.roomId } });
       if (!room) {
@@ -117,6 +148,19 @@ export async function PUT(
     const newCheckOut = (updateData.checkOut as Date) ?? existing.checkOut;
 
     if (body.checkIn || body.checkOut || body.roomId) {
+      const overlappingBooking = await db.booking.findFirst({
+        where: {
+          id: { not: id },
+          roomId,
+          status: { in: ['RESERVED', 'CHECKED_IN'] },
+          checkIn: { lt: newCheckOut },
+          checkOut: { gt: newCheckIn },
+        },
+      });
+      if (overlappingBooking) {
+        return errorResponse('Room already has an active booking in this date range');
+      }
+
       const room = await db.room.findUnique({
         where: { id: roomId },
         include: { type: true },
@@ -134,11 +178,115 @@ export async function PUT(
           const { dueAmount } = computeRoomBookingTotals(
             totalRoomCharge,
             totalPaid,
-            bookingVatOptions(existing)
+            bookingVatOptions({
+              ...existing,
+              vatPercent:
+                (updateData.vatPercent as number | undefined) ?? existing.vatPercent,
+            })
           );
           updateData.totalRoomCharge = totalRoomCharge;
           updateData.dueAmount = dueAmount;
         }
+      }
+    }
+
+    const customerPatch = body.customer as Record<string, unknown> | undefined;
+    if (customerPatch) {
+      const customerUpdate: Record<string, unknown> = {};
+      if (customerPatch.name !== undefined) customerUpdate.name = String(customerPatch.name).trim();
+      if (customerPatch.phone !== undefined) customerUpdate.phone = String(customerPatch.phone).trim();
+      if (customerPatch.email !== undefined) {
+        const emailValue = customerPatch.email ? String(customerPatch.email).trim() : null;
+        const emailError = await getEmailValidationError(
+          emailValue,
+          true,
+          customerPatch.emailVerificationToken as string | undefined
+        );
+        if (emailError) return errorResponse(emailError);
+        customerUpdate.email = emailValue;
+      }
+      if (customerPatch.address !== undefined) {
+        customerUpdate.address = customerPatch.address ? String(customerPatch.address).trim() : null;
+      }
+      if (customerPatch.idType !== undefined) customerUpdate.idType = customerPatch.idType;
+      if (customerPatch.idNumber !== undefined) {
+        customerUpdate.idNumber = customerPatch.idNumber
+          ? String(customerPatch.idNumber).trim()
+          : null;
+      }
+      if (customerPatch.idDocPath !== undefined) {
+        customerUpdate.idDocPath = customerPatch.idDocPath ?? null;
+      }
+      if (customerPatch.registrationNumber !== undefined) {
+        customerUpdate.registrationNumber = customerPatch.registrationNumber
+          ? String(customerPatch.registrationNumber).trim()
+          : null;
+      }
+      if (customerPatch.nationality !== undefined) {
+        customerUpdate.nationality = customerPatch.nationality
+          ? String(customerPatch.nationality).trim()
+          : null;
+      }
+
+      if (Object.keys(customerUpdate).length > 0) {
+        await db.customer.update({
+          where: { id: existing.customerId },
+          data: customerUpdate,
+        });
+      }
+    }
+
+    if (Array.isArray(body.idDocumentPaths)) {
+      await replaceIdDocumentsForBooking(id, body.idDocumentPaths);
+      const firstPath = body.idDocumentPaths.find(
+        (p: unknown) => typeof p === 'string' && p.startsWith('/uploads/id-docs/')
+      );
+      if (firstPath) {
+        await db.customer.update({
+          where: { id: existing.customerId },
+          data: { idDocPath: firstPath },
+        });
+      }
+    }
+
+    const idDocCount = Array.isArray(body.idDocumentPaths)
+      ? body.idDocumentPaths.length
+      : existing.idDocuments.length;
+
+    if (body.isInitialReservation === false) {
+      const email =
+        customerPatch?.email !== undefined
+          ? String(customerPatch.email || '').trim()
+          : existing.customer.email?.trim() || '';
+      const address =
+        customerPatch?.address !== undefined
+          ? String(customerPatch.address || '').trim()
+          : existing.customer.address?.trim() || '';
+      const idNumber =
+        customerPatch?.idNumber !== undefined
+          ? String(customerPatch.idNumber || '').trim()
+          : existing.customer.idNumber?.trim() || '';
+      const registrationNumber =
+        customerPatch?.registrationNumber !== undefined
+          ? String(customerPatch.registrationNumber || '').trim()
+          : existing.customer.registrationNumber?.trim() || '';
+      const nationality =
+        customerPatch?.nationality !== undefined
+          ? String(customerPatch.nationality || '').trim()
+          : existing.customer.nationality?.trim() || '';
+
+      const missing = getCompleteReservationMissingFields({
+        nationality,
+        idNumber,
+        email,
+        address,
+        registrationNumber,
+        idDocumentCount: idDocCount,
+      });
+      if (missing.length > 0) {
+        return errorResponse(
+          `Complete the reservation — required: ${missing.join(', ')}`
+        );
       }
     }
 
@@ -148,6 +296,7 @@ export async function PUT(
       include: {
         customer: true,
         room: { include: { type: true } },
+        idDocuments: { orderBy: { sortOrder: 'asc' } },
       },
     });
 

@@ -1,0 +1,306 @@
+import { format } from 'date-fns'
+import { jsPDF } from 'jspdf'
+import { HOTEL_NAME } from './reservation-terms'
+import { formatBdtForPdf } from './currency'
+import { getLogoDataUrl } from './reservation-document-html'
+
+export const ROOMS_PDF_PER_ROW = 8
+
+export type RoomExportRecord = {
+  roomNumber: string
+  floor: number
+  status: string
+  displayStatus: string
+  typeName: string
+  basePrice: number
+}
+
+export type RoomsExportFilterLabels = {
+  status: string
+  floor: string
+  type: string
+  search: string
+}
+
+export type RoomsExportMeta = {
+  filters?: RoomsExportFilterLabels
+  exportedAt?: Date
+  generatedBy?: {
+    name: string
+    email?: string
+  }
+}
+
+type Rgb = [number, number, number]
+
+const STATUS_COLORS: Record<string, { fill: Rgb; text: Rgb; label: string }> = {
+  AVAILABLE: { fill: [16, 185, 129], text: [255, 255, 255], label: 'Available' },
+  RESERVED: { fill: [14, 165, 233], text: [255, 255, 255], label: 'Reserved' },
+  OCCUPIED: { fill: [250, 204, 21], text: [113, 63, 18], label: 'Occupied' },
+  CLEANING: { fill: [239, 68, 68], text: [255, 255, 255], label: 'Cleaning' },
+  IN_PROGRESS: { fill: [239, 68, 68], text: [255, 255, 255], label: 'Cleaning' },
+  MAINTENANCE: { fill: [100, 116, 139], text: [255, 255, 255], label: 'Maintenance' },
+}
+
+const PDF_TABLE_COLUMNS = [
+  { header: 'Room', width: 22, value: (r: RoomExportRecord) => r.roomNumber },
+  { header: 'Floor', width: 16, value: (r: RoomExportRecord) => String(r.floor) },
+  { header: 'Type', width: 36, value: (r: RoomExportRecord) => r.typeName },
+  { header: 'Rate/night', width: 28, value: (r: RoomExportRecord) => formatBdtForPdf(r.basePrice) },
+  { header: 'Status', width: 28, value: (r: RoomExportRecord) => statusLabel(r.displayStatus) },
+] as const
+
+const PDF_LINE_HEIGHT = 3.6
+const PDF_CELL_PAD = 1.5
+
+function statusLabel(status: string): string {
+  return STATUS_COLORS[status]?.label ?? status.replace(/_/g, ' ')
+}
+
+function formatGeneratedBy(user?: RoomsExportMeta['generatedBy']): string {
+  if (!user?.name) return '—'
+  if (user.email) return `${user.name} (${user.email})`
+  return user.name
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const rows: T[][] = []
+  for (let i = 0; i < items.length; i += size) {
+    rows.push(items.slice(i, i + size))
+  }
+  return rows
+}
+
+async function loadExportLogo(): Promise<{ dataUrl: string } | null> {
+  try {
+    const dataUrl = await getLogoDataUrl()
+    return { dataUrl }
+  } catch {
+    return null
+  }
+}
+
+function splitCellLines(pdf: jsPDF, text: string, colWidth: number): string[] {
+  const content = text || '—'
+  return pdf.splitTextToSize(content, Math.max(colWidth - PDF_CELL_PAD * 2, 8))
+}
+
+function countByStatus(rooms: RoomExportRecord[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const room of rooms) {
+    const key = room.displayStatus
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return counts
+}
+
+export function roomsExportFileName(): string {
+  const stamp = format(new Date(), 'yyyy-MM-dd-HHmm')
+  return `rooms-${stamp}.pdf`
+}
+
+export async function downloadRoomsPdf(
+  rooms: RoomExportRecord[],
+  meta: RoomsExportMeta = {}
+): Promise<void> {
+  if (!rooms.length) {
+    throw new Error('No rooms to export')
+  }
+
+  const logo = await loadExportLogo()
+  const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'landscape', compress: true })
+  const pageWidth = pdf.internal.pageSize.getWidth()
+  const pageHeight = pdf.internal.pageSize.getHeight()
+  const marginX = 12
+  const marginTop = 10
+  const marginBottom = 10
+  const exportedAt = meta.exportedAt ?? new Date()
+  const filters = meta.filters ?? {
+    status: 'All status',
+    floor: 'All floors',
+    type: 'All types',
+    search: '—',
+  }
+
+  let y = marginTop
+
+  const logoSize = 12
+  const headerGap = 4
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  const nameWidth = pdf.getTextWidth(HOTEL_NAME)
+  pdf.setFontSize(12)
+  const subtitleWidth = pdf.getTextWidth('Rooms Status Report')
+  const textWidth = Math.max(nameWidth, subtitleWidth)
+  const blockWidth = (logo ? logoSize + headerGap : 0) + textWidth
+  const blockStartX = (pageWidth - blockWidth) / 2
+
+  if (logo) {
+    pdf.addImage(logo.dataUrl, 'PNG', blockStartX, marginTop, logoSize, logoSize)
+  }
+
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(16)
+  if (logo) {
+    pdf.text(HOTEL_NAME, blockStartX + logoSize + headerGap, marginTop + 5)
+    pdf.setFontSize(12)
+    pdf.text('Rooms Status Report', blockStartX + logoSize + headerGap, marginTop + 10)
+  } else {
+    pdf.text(HOTEL_NAME, pageWidth / 2, marginTop + 7, { align: 'center' })
+    pdf.setFontSize(12)
+    pdf.text('Rooms Status Report', pageWidth / 2, marginTop + 14, { align: 'center' })
+  }
+
+  y = marginTop + (logo ? logoSize : 14) + 4
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(8)
+  const infoLines = [
+    `Exported: ${format(exportedAt, 'dd MMM yyyy, HH:mm')}`,
+    `Generated by: ${formatGeneratedBy(meta.generatedBy)}`,
+    `Status filter: ${filters.status}`,
+    `Floor filter: ${filters.floor}`,
+    `Type filter: ${filters.type}`,
+    `Search: ${filters.search}`,
+    `Total rooms: ${rooms.length}`,
+  ]
+  for (const line of infoLines) {
+    pdf.text(line, marginX, y)
+    y += 3.8
+  }
+
+  const statusCounts = countByStatus(rooms)
+  y += 1
+  pdf.setFont('helvetica', 'bold')
+  pdf.text('Status summary:', marginX, y)
+  y += 4
+  pdf.setFont('helvetica', 'normal')
+
+  const legendItems = ['AVAILABLE', 'RESERVED', 'OCCUPIED', 'CLEANING', 'MAINTENANCE'] as const
+  let legendX = marginX
+  for (const key of legendItems) {
+    const palette = STATUS_COLORS[key]
+    const count =
+      key === 'CLEANING'
+        ? (statusCounts.CLEANING ?? 0) + (statusCounts.IN_PROGRESS ?? 0)
+        : (statusCounts[key] ?? 0)
+    pdf.setFillColor(...palette.fill)
+    pdf.rect(legendX, y - 3, 5, 3.5, 'F')
+    pdf.text(`${palette.label}: ${count}`, legendX + 6.5, y)
+    legendX += 42
+  }
+  y += 8
+
+  const gridWidth = pageWidth - marginX * 2
+  const gap = 2
+  const cellW = (gridWidth - gap * (ROOMS_PDF_PER_ROW - 1)) / ROOMS_PDF_PER_ROW
+  const cellH = 20
+
+  const floors = [...new Set(rooms.map((r) => r.floor))].sort((a, b) => a - b)
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed > pageHeight - marginBottom) {
+      pdf.addPage()
+      y = marginTop
+    }
+  }
+
+  for (const floor of floors) {
+    const floorRooms = rooms
+      .filter((r) => r.floor === floor)
+      .sort((a, b) => Number(a.roomNumber) - Number(b.roomNumber))
+    const rows = chunk(floorRooms, ROOMS_PDF_PER_ROW)
+
+    ensureSpace(8 + cellH)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(10)
+    pdf.text(`Floor ${floor}`, marginX, y)
+    y += 5
+    pdf.setFont('helvetica', 'normal')
+
+    for (const rowRooms of rows) {
+      ensureSpace(cellH + 2)
+      let x = marginX
+      for (const room of rowRooms) {
+        const palette = STATUS_COLORS[room.displayStatus] ?? STATUS_COLORS.AVAILABLE
+        pdf.setFillColor(...palette.fill)
+        pdf.setDrawColor(40, 40, 40)
+        pdf.setLineWidth(0.2)
+        pdf.rect(x, y, cellW, cellH, 'FD')
+
+        pdf.setTextColor(...palette.text)
+        pdf.setFont('helvetica', 'bold')
+        pdf.setFontSize(11)
+        pdf.text(room.roomNumber, x + 2, y + 6)
+
+        pdf.setFontSize(6.5)
+        pdf.setFont('helvetica', 'normal')
+        const statusText = statusLabel(room.displayStatus)
+        pdf.text(statusText, x + 2, y + 10.5)
+
+        const typeLines = pdf.splitTextToSize(room.typeName || '—', cellW - 4)
+        pdf.text(typeLines.slice(0, 1), x + 2, y + 14.5)
+
+        pdf.setFontSize(6)
+        pdf.text(formatBdtForPdf(room.basePrice), x + 2, y + 18)
+
+        x += cellW + gap
+      }
+      y += cellH + gap
+    }
+    y += 4
+  }
+
+  pdf.setTextColor(0, 0, 0)
+  y += 4
+  ensureSpace(14)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(10)
+  pdf.text('Room details', marginX, y)
+  y += 6
+
+  const tableWidth = PDF_TABLE_COLUMNS.reduce((sum, col) => sum + col.width, 0)
+  const headerRowHeight = 6
+
+  const drawTableHeader = () => {
+    pdf.setFillColor(245, 245, 245)
+    pdf.rect(marginX, y - 4, tableWidth, headerRowHeight, 'F')
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(7)
+    let x = marginX + PDF_CELL_PAD
+    for (const col of PDF_TABLE_COLUMNS) {
+      pdf.text(col.header, x, y)
+      x += col.width
+    }
+    y += headerRowHeight
+  }
+
+  drawTableHeader()
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(7)
+
+  for (const room of rooms) {
+    const cellLines = PDF_TABLE_COLUMNS.map((col) =>
+      splitCellLines(pdf, col.value(room), col.width)
+    )
+    const maxLines = Math.max(...cellLines.map((lines) => lines.length), 1)
+    const rowHeight = maxLines * PDF_LINE_HEIGHT + 1.5
+
+    if (y + rowHeight > pageHeight - marginBottom) {
+      pdf.addPage()
+      y = marginTop
+      drawTableHeader()
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(7)
+    }
+
+    let x = marginX + PDF_CELL_PAD
+    for (let i = 0; i < PDF_TABLE_COLUMNS.length; i++) {
+      pdf.text(cellLines[i], x, y)
+      x += PDF_TABLE_COLUMNS[i].width
+    }
+    y += rowHeight
+  }
+
+  pdf.save(roomsExportFileName())
+}

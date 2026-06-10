@@ -254,6 +254,18 @@
   color: #666666;
 }
 
+.reservation-a4-sheet .rd-blank-field {
+  display: inline-block;
+  min-width: 28mm;
+  min-height: 1.15em;
+  border-bottom: 0.25mm solid #666666;
+  vertical-align: bottom;
+}
+
+.reservation-a4-sheet .rd-blank-field--wide {
+  min-width: 48mm;
+}
+
 /* Page 2 — guest ID attachments */
 .reservation-a4-sheet--attachments {
   display: flex;

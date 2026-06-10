@@ -23,12 +23,40 @@ export async function GET(
             id: true,
             checkIn: true,
             checkOut: true,
+            adults: true,
+            children: true,
             status: true,
+            company: true,
             vatApplied: true,
             vatPercent: true,
             customer: true,
+            companyLedger: {
+              select: {
+                id: true,
+                name: true,
+                contactPerson: true,
+                phone: true,
+                email: true,
+                address: true,
+              },
+            },
+            companyLedgerGuest: {
+              select: {
+                guestName: true,
+                phone: true,
+                email: true,
+                nationality: true,
+                registrationNumber: true,
+                address: true,
+                idType: true,
+                idNumber: true,
+              },
+            },
+            creator: { select: { id: true, name: true } },
             room: {
-              include: { type: true },
+              include: {
+                type: { select: { name: true, basePrice: true } },
+              },
             },
             charges: true,
             restaurantOrders: {

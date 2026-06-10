@@ -1,4 +1,9 @@
-import { bookingVatOptions, computeRoomBookingTotals, sumBookingNetPaid } from '@/lib/booking-totals'
+import { computeHotelDiscountAmount, parseBookingDiscountType } from '@/lib/booking-discount'
+import {
+  bookingVatOptions,
+  computeRoomBookingTotals,
+  sumBookingNetPaid,
+} from '@/lib/booking-totals'
 import {
   computeAdjustedRoomCharge,
   countActualStayNights,
@@ -33,8 +38,12 @@ export type CheckoutSettlementParams = {
   restaurantOrders: RestaurantOrderRow[]
   lateCheckoutCharge: number
   payments: { amount: number; paymentType: string }[]
-  defaultDiscountPercent: number
+  discountEnabled?: boolean
+  discountType?: string | null
+  discountValue?: number
   includeExtraCharges?: boolean
+  /** Pending damage charge for preview (not yet saved) or explicit amount to include. */
+  damageChargeAmount?: number
   asOf?: Date
 }
 
@@ -52,6 +61,7 @@ export type CheckoutSettlementResult = {
   lateCheckoutCharge: number
   extraChargesIfIncluded: number
   extraCharges: number
+  damageCharge: number
   foodCharges: number
   subtotal: number
   discount: number
@@ -66,9 +76,20 @@ export type CheckoutSettlementResult = {
   creditAmount: number
 }
 
+function sumDamageFromCharges(charges: BookingCharge[]): number {
+  return charges
+    .filter((c) => c.chargeType === 'DAMAGE')
+    .reduce((sum, c) => sum + c.amount * c.quantity, 0)
+}
+
 function sumNonRoomCharges(charges: BookingCharge[], excludeLate = false): number {
   return charges
-    .filter((c) => c.chargeType !== 'ROOM_RATE' && (!excludeLate || c.chargeType !== 'LATE_CHECKOUT'))
+    .filter(
+      (c) =>
+        c.chargeType !== 'ROOM_RATE' &&
+        c.chargeType !== 'DAMAGE' &&
+        (!excludeLate || c.chargeType !== 'LATE_CHECKOUT')
+    )
     .reduce((sum, c) => sum + c.amount * c.quantity, 0)
 }
 
@@ -111,11 +132,14 @@ export function computeCheckoutSettlement(
     : null
 
   const lateInDb = sumLateFromCharges(booking.charges)
+  const damageInDb = sumDamageFromCharges(booking.charges)
   const otherExtras = sumNonRoomCharges(booking.charges, true)
   const lateWouldBe = lateInDb > 0 ? lateInDb : lateCheckoutCharge
+  const pendingDamage = Math.max(0, params.damageChargeAmount ?? 0)
+  const damageCharge = damageInDb > 0 ? damageInDb : pendingDamage
   const extraChargesIfIncluded = otherExtras + lateWouldBe
   const lateApplied = includeExtraCharges ? lateWouldBe : 0
-  const extraCharges = includeExtraCharges ? extraChargesIfIncluded : 0
+  const extraCharges = (includeExtraCharges ? extraChargesIfIncluded : 0) + damageCharge
 
   const restaurantNet = restaurantOrders.reduce(
     (sum, order) => sum + Math.max(0, order.subtotal - order.discount),
@@ -130,7 +154,12 @@ export function computeCheckoutSettlement(
   const vatOpts = bookingVatOptions(booking)
   const vatApplied = vatOpts.vatApplied !== false
   const hotelVatRate = vatApplied ? Math.max(0, vatOpts.vatPercent ?? 0) : 0
-  const discount = hotelBase * (params.defaultDiscountPercent / 100)
+  const discount = computeHotelDiscountAmount(
+    hotelBase,
+    params.discountEnabled === true,
+    parseBookingDiscountType(params.discountType),
+    Number(params.discountValue) || 0
+  )
   const hotelVat =
     hotelVatRate > 0 ? ((hotelBase - discount) * hotelVatRate) / 100 : 0
   const vatAmount = hotelVat + restaurantVat
@@ -154,6 +183,7 @@ export function computeCheckoutSettlement(
     lateCheckoutCharge: lateWouldBe,
     extraChargesIfIncluded,
     extraCharges,
+    damageCharge,
     foodCharges,
     subtotal,
     discount,

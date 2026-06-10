@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api-client'
-import { format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { EmailInput } from '@/components/ui/email-input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent } from '@/components/ui/card'
@@ -19,19 +20,35 @@ import {
 } from '@/components/ui/select'
 import { IdDocumentScanner } from './IdDocumentScanner'
 import { GuestSearchField, type GuestSearchResult } from './GuestSearchField'
+import { CompanyLedgerSearchField } from './CompanyLedgerSearchField'
+import { NationalityField } from '@/components/erp/shared/NationalityField'
+import {
+  DEFAULT_NATIONALITY,
+  isBangladeshNationality,
+  resolveIdTypeForNationality,
+} from '@/lib/id-type-label'
+import { NATIONALITY_OPTIONS } from '@/lib/nationalities'
 import { ReservationDocumentView } from './ReservationDocumentView'
 import type { IdDocumentType } from '@/lib/id-ocr'
 import type { IdDocumentItem, IdScanResult } from './IdDocumentScanner'
 import { Switch } from '@/components/ui/switch'
-import { CheckCircle2, LogIn, Plus } from 'lucide-react'
+import { CheckCircle2, FilePenLine, LogIn, Plus } from 'lucide-react'
 import {
   computeRoomBookingTotals,
   DEFAULT_VAT_PERCENT,
   VAT_PERCENT_INPUT_STEP,
 } from '@/lib/booking-totals'
 import { formatPaymentMethod, PAYMENT_METHOD_OPTIONS } from '@/lib/payment-method'
-import { DEFAULT_GUEST_COMPANY, formatGuestCompany } from '@/lib/reservation-terms'
+import {
+  DEFAULT_GUEST_COMPANY,
+  formatGuestCompany,
+  formatReservationMealPlan,
+} from '@/lib/reservation-terms'
 import { useHotelTimes } from '@/hooks/use-hotel-times'
+import {
+  getCompleteReservationMissingFields,
+  getInitialReservationMissingFields,
+} from '@/lib/reservation-completion-fields'
 import {
   applyHotelTimeToBookingInput,
   countHotelStayNights,
@@ -40,6 +57,7 @@ import {
   isStayDatePickerRangeValid,
   minCheckoutDatePickerValue,
 } from '@/lib/hotel-times'
+import type { BookingDiscountType } from '@/lib/booking-discount'
 
 interface Room {
   id: string
@@ -64,17 +82,40 @@ function stayDatesValid(checkIn: string, checkOut: string) {
   return isStayDatePickerRangeValid(checkIn, checkOut)
 }
 
+function getInitialReservationGuestMissingFields(
+  mode: GuestMode,
+  guest: {
+    selectedCustomerId: string
+    guestName: string
+    guestPhone: string
+    guestNationality: string
+  }
+): string[] {
+  const missing = getInitialReservationMissingFields({
+    guestName: guest.guestName,
+    guestPhone: guest.guestPhone,
+    guestNationality: guest.guestNationality,
+  })
+  if (mode === 'existing' && !guest.selectedCustomerId) {
+    missing.unshift('Guest selection')
+  }
+  return missing
+}
+
 type GuestMode = 'new' | 'existing'
 
 type GuestDraft = {
   selectedCustomerId: string
   guestName: string
   guestCompany: string
+  companyLedgerId: string
   guestPhone: string
   guestEmail: string
   guestAddress: string
+  guestNationality: string
   idType: IdDocumentType
   idNumber: string
+  registrationNumber: string
   idDocuments: IdDocumentItem[]
   existingDocsStatus: 'idle' | 'loading' | 'none' | 'found'
 }
@@ -85,6 +126,7 @@ type StayDraft = {
   checkOutDate: string
   adults: string
   children: string
+  withMeal: boolean
 }
 
 type PaymentDraft = {
@@ -93,6 +135,9 @@ type PaymentDraft = {
   reservationNotes: string
   vatEditEnabled: boolean
   vatPercent: string
+  discountEnabled: boolean
+  discountType: BookingDiscountType
+  discountValue: string
 }
 
 type ReservationWizardDraft = {
@@ -107,11 +152,14 @@ function emptyGuestDraft(): GuestDraft {
     selectedCustomerId: '',
     guestName: '',
     guestCompany: DEFAULT_GUEST_COMPANY,
+    companyLedgerId: '',
     guestPhone: '',
     guestEmail: '',
     guestAddress: '',
+    guestNationality: DEFAULT_NATIONALITY,
     idType: 'national_id',
     idNumber: '',
+    registrationNumber: '',
     idDocuments: [],
     existingDocsStatus: 'idle',
   }
@@ -128,6 +176,7 @@ function emptyReservationDraft(vatPercent = String(DEFAULT_VAT_PERCENT)): Reserv
       checkOutDate: dates.checkOut,
       adults: '1',
       children: '0',
+      withMeal: false,
     },
     payment: {
       advancePayment: '0',
@@ -135,17 +184,39 @@ function emptyReservationDraft(vatPercent = String(DEFAULT_VAT_PERCENT)): Reserv
       reservationNotes: '',
       vatEditEnabled: false,
       vatPercent,
+      discountEnabled: false,
+      discountType: 'PERCENTAGE',
+      discountValue: '',
     },
   }
 }
 
-export function NewReservationWizard() {
+interface NewReservationWizardProps {
+  editBookingId?: string
+}
+
+function toDatePickerValue(iso: string) {
+  try {
+    return format(parseISO(iso), 'yyyy-MM-dd')
+  } catch {
+    return format(new Date(iso), 'yyyy-MM-dd')
+  }
+}
+
+export function NewReservationWizard({ editBookingId }: NewReservationWizardProps = {}) {
   const queryClient = useQueryClient()
+  const isEditMode = !!editBookingId
   const [completedReservationId, setCompletedReservationId] = useState<string | null>(null)
   const [checkedInOnConfirm, setCheckedInOnConfirm] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [guestMode, setGuestMode] = useState<GuestMode>('new')
+  const [isInitialFlow, setIsInitialFlow] = useState(isEditMode)
+  const [initialFlowFieldError, setInitialFlowFieldError] = useState<string[] | null>(null)
+  const [guestMode, setGuestMode] = useState<GuestMode>(isEditMode ? 'existing' : 'new')
+  const [editDraftLoaded, setEditDraftLoaded] = useState(false)
+  const [idEntryStarted, setIdEntryStarted] = useState(isEditMode)
   const [defaultVatPercent, setDefaultVatPercent] = useState(DEFAULT_VAT_PERCENT)
+  const [guestEmailBlocking, setGuestEmailBlocking] = useState(false)
+  const [guestEmailVerificationToken, setGuestEmailVerificationToken] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<GuestMode, ReservationWizardDraft>>({
     new: emptyReservationDraft(),
     existing: emptyReservationDraft(),
@@ -159,21 +230,27 @@ export function NewReservationWizard() {
     selectedCustomerId,
     guestName,
     guestCompany,
+    companyLedgerId,
     guestPhone,
     guestEmail,
     guestAddress,
+    guestNationality,
     idType,
     idNumber,
+    registrationNumber,
     idDocuments,
     existingDocsStatus,
   } = guest
-  const { selectedRoomId, checkInDate, checkOutDate, adults, children } = stay
+  const { selectedRoomId, checkInDate, checkOutDate, adults, children, withMeal } = stay
   const {
     advancePayment,
     advancePaymentMethod,
     reservationNotes,
     vatEditEnabled,
     vatPercent,
+    discountEnabled,
+    discountType,
+    discountValue,
   } = payment
 
   type DraftPatch = {
@@ -216,6 +293,33 @@ export function NewReservationWizard() {
   }
 
   const patchGuest = (patch: Partial<GuestDraft>) => patchDraft({ guest: patch })
+
+  const handleNationalityChange = (value: string) => {
+    const trimmed = value.trim()
+    const isKnownCountry = NATIONALITY_OPTIONS.some(
+      (country) => country.toLowerCase() === trimmed.toLowerCase()
+    )
+    const wasBangladesh = isBangladeshNationality(guestNationality)
+
+    const guestPatch: Partial<GuestDraft> = { guestNationality: value }
+
+    if (isKnownCountry) {
+      const isNowBangladesh = isBangladeshNationality(trimmed)
+      if (isNowBangladesh && !wasBangladesh) {
+        guestPatch.idType = 'national_id'
+      } else if (!isNowBangladesh) {
+        guestPatch.idType = resolveIdTypeForNationality(trimmed, idType)
+      } else {
+        guestPatch.idType = resolveIdTypeForNationality(trimmed, idType)
+      }
+    }
+
+    patchGuest(guestPatch)
+
+    if (isKnownCountry && idDocuments.length === 0 && !idNumber.trim()) {
+      revertToInitialStage(trimmed)
+    }
+  }
   const patchStay = (patch: Partial<StayDraft>) => patchDraft({ stay: patch })
   const patchPayment = (patch: Partial<PaymentDraft>) => patchDraft({ payment: patch })
   const setStep = (nextStep: number) => patchDraft({ step: nextStep })
@@ -230,6 +334,77 @@ export function NewReservationWizard() {
       ),
     enabled: datesValid,
   })
+
+  const { data: editBookingData, isLoading: editBookingLoading } = useQuery({
+    queryKey: ['edit-booking', editBookingId],
+    queryFn: () =>
+      api.get<{ success: boolean; data: Record<string, unknown> }>(`/bookings/${editBookingId}`),
+    enabled: isEditMode,
+  })
+
+  useEffect(() => {
+    if (!isEditMode || editDraftLoaded) return
+    const booking = (editBookingData as { data?: Record<string, unknown> })?.data
+    if (!booking) return
+
+    const customer = booking.customer as Record<string, unknown> | undefined
+    const room = booking.room as { id?: string } | undefined
+    const idDocs = (booking.idDocuments as { filePath: string }[] | undefined) ?? []
+
+    setDrafts({
+      new: emptyReservationDraft(String(booking.vatPercent ?? defaultVatPercent)),
+      existing: {
+        step: 1,
+        guest: {
+          selectedCustomerId: String(booking.customerId ?? ''),
+          guestName: String(customer?.name ?? ''),
+          guestCompany: formatGuestCompany(
+            (booking.company as string | undefined) ?? (customer?.company as string | undefined)
+          ),
+          companyLedgerId: String(booking.companyLedgerId ?? ''),
+          guestPhone: String(customer?.phone ?? ''),
+          guestEmail: String(customer?.email ?? ''),
+          guestAddress: String(customer?.address ?? ''),
+          guestNationality: String(customer?.nationality ?? DEFAULT_NATIONALITY),
+          idType:
+            customer?.idType === 'passport' ||
+            customer?.idType === 'driving_license' ||
+            customer?.idType === 'national_id'
+              ? (customer.idType as IdDocumentType)
+              : 'national_id',
+          idNumber: String(customer?.idNumber ?? ''),
+          registrationNumber: String(customer?.registrationNumber ?? ''),
+          idDocuments: idDocs.map((d) => ({ path: d.filePath, previewUrl: d.filePath })),
+          existingDocsStatus: idDocs.length > 0 ? 'found' : 'none',
+        },
+        stay: {
+          selectedRoomId: String(room?.id ?? booking.roomId ?? ''),
+          checkInDate: toDatePickerValue(String(booking.checkIn)),
+          checkOutDate: toDatePickerValue(String(booking.checkOut)),
+          adults: String(booking.adults ?? 1),
+          children: String(booking.children ?? 0),
+          withMeal: booking.withMeal === true,
+        },
+        payment: {
+          advancePayment: String(booking.advancePayment ?? 0),
+          advancePaymentMethod: 'NONE',
+          reservationNotes: String(booking.notes ?? ''),
+          vatEditEnabled: false,
+          vatPercent: String(booking.vatPercent ?? defaultVatPercent),
+          discountEnabled: (booking as { discountEnabled?: boolean }).discountEnabled === true,
+          discountType:
+            (booking as { discountType?: string }).discountType === 'FIXED'
+              ? 'FIXED'
+              : 'PERCENTAGE',
+          discountValue: String((booking as { discountValue?: number }).discountValue ?? ''),
+        },
+      },
+    })
+    setIsInitialFlow(true)
+    setGuestMode('existing')
+    setIdEntryStarted(true)
+    setEditDraftLoaded(true)
+  }, [isEditMode, editBookingData, editDraftLoaded, defaultVatPercent])
 
   const { data: billingSettingsData } = useQuery({
     queryKey: ['billing-settings'],
@@ -264,9 +439,21 @@ export function NewReservationWizard() {
     }))
   }, [billingSettingsData])
 
-  const availableRooms = (
-    ((roomsData as { data?: Room[] })?.data || []) as Room[]
-  ).filter((r) => r.status === 'AVAILABLE')
+  const availableRooms = useMemo(() => {
+    const rooms = (
+      ((roomsData as { data?: Room[] })?.data || []) as Room[]
+    ).filter((r) => r.status === 'AVAILABLE')
+
+    if (!isEditMode || !selectedRoomId) return rooms
+    if (rooms.some((r) => r.id === selectedRoomId)) return rooms
+
+    const booking = (editBookingData as { data?: { room?: Room } })?.data
+    const currentRoom = booking?.room
+    if (currentRoom?.id === selectedRoomId) {
+      return [...rooms, currentRoom]
+    }
+    return rooms
+  }, [roomsData, isEditMode, selectedRoomId, editBookingData])
 
   useEffect(() => {
     if (selectedRoomId && !availableRooms.some((r) => r.id === selectedRoomId)) {
@@ -278,11 +465,18 @@ export function NewReservationWizard() {
   const resetForm = () => {
     setCompletedReservationId(null)
     setCheckedInOnConfirm(false)
-    setGuestMode('new')
-    setDrafts({
-      new: emptyReservationDraft(String(defaultVatPercent)),
-      existing: emptyReservationDraft(String(defaultVatPercent)),
-    })
+    setIsInitialFlow(isEditMode)
+    setInitialFlowFieldError(null)
+    setIdEntryStarted(isEditMode)
+    setGuestMode(isEditMode ? 'existing' : 'new')
+    if (isEditMode) {
+      setEditDraftLoaded(false)
+    } else {
+      setDrafts({
+        new: emptyReservationDraft(String(defaultVatPercent)),
+        existing: emptyReservationDraft(String(defaultVatPercent)),
+      })
+    }
   }
 
   const handleScanComplete = (result: IdScanResult) => {
@@ -292,6 +486,36 @@ export function NewReservationWizard() {
     if (result.idNumber) patch.idNumber = result.idNumber.replace(/\D/g, '')
     if (result.idType) patch.idType = result.idType
     if (Object.keys(patch).length > 0) patchDraftFor('new', { guest: patch })
+  }
+
+  const revertToInitialStage = (nationalityOverride?: string) => {
+    const nationality = nationalityOverride ?? guestNationality
+    setIdEntryStarted(false)
+    if (!isEditMode) {
+      setIsInitialFlow(true)
+      patchGuest({
+        idNumber: '',
+        idType: resolveIdTypeForNationality(nationality, 'national_id'),
+      })
+    }
+  }
+
+  const handleIdDocumentsChange = (docs: IdDocumentItem[]) => {
+    if (docs.length > 0) {
+      setIsInitialFlow(false)
+      setIdEntryStarted(true)
+      patchGuest({
+        idDocuments: docs,
+        ...(guestMode === 'existing' ? { existingDocsStatus: 'found' as const } : {}),
+      })
+      return
+    }
+
+    patchGuest({
+      idDocuments: [],
+      ...(guestMode === 'existing' ? { existingDocsStatus: 'none' as const } : {}),
+    })
+    revertToInitialStage()
   }
 
   const loadGuestIdDocuments = async (customerId: string) => {
@@ -330,8 +554,14 @@ export function NewReservationWizard() {
         guestPhone: selected.phone,
         guestEmail: selected.email || '',
         guestAddress: selected.address || '',
+        guestNationality: selected.nationality?.trim() || DEFAULT_NATIONALITY,
+        idType: resolveIdTypeForNationality(
+          selected.nationality?.trim() || DEFAULT_NATIONALITY,
+          idTypeValue
+        ),
         idNumber: selected.idNumber || '',
-        idType: idTypeValue,
+        // Registration is per reservation — never pre-fill from the guest profile.
+        registrationNumber: '',
       },
     })
     void loadGuestIdDocuments(selected.id)
@@ -369,10 +599,18 @@ export function NewReservationWizard() {
     vatPercent: effectiveVatPercent(),
   })
 
+  const parsedDiscountValue = () => Math.max(0, parseFloat(discountValue) || 0)
+
+  const discountInput = () => ({
+    discountEnabled,
+    discountType,
+    discountValue: parsedDiscountValue(),
+  })
+
   const estimatedTotals = () => {
     const roomCharge = estimatedRoomCharge()
     const advance = parseFloat(advancePayment) || 0
-    return computeRoomBookingTotals(roomCharge, advance, vatOptions())
+    return computeRoomBookingTotals(roomCharge, advance, vatOptions(), discountInput())
   }
 
   const createCustomerMutation = useMutation({
@@ -383,8 +621,40 @@ export function NewReservationWizard() {
     mutationFn: (data: Record<string, unknown>) => api.post('/bookings', data),
   })
 
-  const resolveCustomerId = async (): Promise<string | null> => {
-    if (idDocuments.length === 0) {
+  const resolvedGuestNationality = () => guestNationality.trim() || DEFAULT_NATIONALITY
+
+  const buildGuestProfilePayload = () => ({
+    name: guestName.trim(),
+    company: formatGuestCompany(guestCompany),
+    phone: guestPhone.trim(),
+    email: guestEmail.trim() || null,
+    emailVerificationToken: guestEmailVerificationToken || undefined,
+    address: guestAddress.trim() || null,
+    nationality: resolvedGuestNationality(),
+    idType,
+    idNumber: idNumber.trim() || null,
+    registrationNumber: registrationNumber.trim() || null,
+    idDocPath: idDocuments[0]?.path || null,
+  })
+
+  const syncGuestProfile = async (customerId: string): Promise<boolean> => {
+    const updateRes = (await api.put(`/customers/${customerId}`, buildGuestProfilePayload())) as {
+      success?: boolean
+      error?: string
+    }
+
+    if (!updateRes?.success) {
+      toast.error(updateRes?.error || 'Failed to update guest profile')
+      return false
+    }
+
+    return true
+  }
+
+  const resolveCustomerId = async (options?: {
+    skipIdRequirement?: boolean
+  }): Promise<string | null> => {
+    if (!options?.skipIdRequirement && idDocuments.length === 0) {
       toast.error('Upload or scan at least one ID image before continuing')
       return null
     }
@@ -398,20 +668,12 @@ export function NewReservationWizard() {
         toast.error('Guest name and phone are required')
         return null
       }
+      if (!resolvedGuestNationality()) {
+        toast.error('Nationality is required')
+        return null
+      }
 
-      const updateRes = (await api.put(`/customers/${selectedCustomerId}`, {
-        name: guestName.trim(),
-        company: formatGuestCompany(guestCompany),
-        phone: guestPhone.trim(),
-        email: guestEmail.trim() || null,
-        address: guestAddress.trim() || null,
-        idType,
-        idNumber: idNumber.trim() || null,
-        idDocPath: idDocuments[0]?.path || null,
-      })) as { success?: boolean; error?: string }
-
-      if (!updateRes?.success) {
-        toast.error(updateRes?.error || 'Failed to update guest profile')
+      if (!(await syncGuestProfile(selectedCustomerId))) {
         return null
       }
 
@@ -422,15 +684,17 @@ export function NewReservationWizard() {
       toast.error('Guest name and phone are required')
       return null
     }
+    if (!resolvedGuestNationality()) {
+      toast.error('Nationality is required')
+      return null
+    }
 
     const res = (await createCustomerMutation.mutateAsync({
-      name: guestName.trim(),
-      company: formatGuestCompany(guestCompany),
-      phone: guestPhone.trim(),
+      ...buildGuestProfilePayload(),
       email: guestEmail.trim() || undefined,
       address: guestAddress.trim() || undefined,
-      idType,
       idNumber: idNumber.trim() || undefined,
+      registrationNumber: registrationNumber.trim() || undefined,
       idDocPath: idDocuments[0]?.path || undefined,
     })) as { success?: boolean; data?: { id: string }; error?: string; message?: string }
 
@@ -443,10 +707,18 @@ export function NewReservationWizard() {
       toast.info('Guest profile found for this phone — continuing with existing record.')
     }
 
+    if (!(await syncGuestProfile(res.data.id))) {
+      return null
+    }
+
     return res.data.id
   }
 
-  const finishReservation = (bookingId: string, withCheckIn: boolean) => {
+  const finishReservation = (
+    bookingId: string,
+    withCheckIn: boolean,
+    kind: 'initial' | 'full' | 'updated' | 'completed' = 'full'
+  ) => {
     setCheckedInOnConfirm(withCheckIn)
     setCompletedReservationId(bookingId)
     patchDraft({ step: 5 })
@@ -456,22 +728,110 @@ export function NewReservationWizard() {
     queryClient.invalidateQueries({ queryKey: ['available-rooms'] })
     queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['edit-booking', bookingId] })
+      queryClient.invalidateQueries({ queryKey: ['reservation-document', bookingId] })
+      queryClient.invalidateQueries({ queryKey: ['company-ledger-options'] })
+      queryClient.invalidateQueries({ queryKey: ['company-ledger'] })
+
+    const messages: Record<typeof kind, string> = {
+      initial: 'Initial reservation saved — complete ID details later from bookings',
+      full: 'Reservation created — print or download your document below',
+      updated: 'Initial reservation updated — print or download your document below',
+      completed: 'Reservation completed — print or download your document below',
+    }
     toast.success(
-      withCheckIn
-        ? 'Reservation confirmed and guest checked in'
-        : 'Reservation created — print or download your document below'
+      withCheckIn ? 'Reservation confirmed and guest checked in' : messages[kind]
     )
   }
 
-  const submitReservation = async (withCheckIn: boolean) => {
-    const customerId = await resolveCustomerId()
+  const submitReservation = async (options: {
+    withCheckIn?: boolean
+    asInitial?: boolean
+    completeInitial?: boolean
+  }) => {
+    const { withCheckIn = false, asInitial = false, completeInitial = false } = options
+    const skipId = asInitial || (isInitialFlow && !completeInitial)
+    const customerId = await resolveCustomerId({ skipIdRequirement: skipId })
     if (!customerId || !selectedRoomId || !checkInDate || !checkOutDate) return
+
+    if (!guestNationality.trim()) {
+      toast.error('Nationality is required')
+      return
+    }
+
+    if (completeInitial) {
+      const missing = getCompleteReservationMissingFields({
+        nationality: guestNationality,
+        idNumber,
+        email: guestEmail,
+        address: guestAddress,
+        registrationNumber,
+        idDocumentCount: idDocuments.length,
+      })
+      if (missing.length > 0) {
+        toast.error(`Please fill required fields: ${missing.join(', ')}`)
+        return
+      }
+      if (guestEmailBlocking) {
+        toast.error('Verify the guest email before completing the reservation')
+        return
+      }
+    }
 
     setIsSubmitting(true)
     try {
+      const idPaths =
+        idDocuments.length > 0 ? idDocuments.map((d) => d.path) : undefined
+
+      if (isEditMode && editBookingId) {
+        const res = (await api.put(`/bookings/${editBookingId}`, {
+          company: formatGuestCompany(guestCompany),
+          roomId: selectedRoomId,
+          checkIn: checkInDate,
+          checkOut: checkOutDate,
+          adults: parseInt(adults, 10),
+          children: parseInt(children, 10),
+          notes: reservationNotes.trim() || undefined,
+          idDocumentPaths: idPaths,
+          vatPercent: effectiveVatPercent(),
+          withMeal,
+          discountEnabled,
+          discountType,
+          discountValue: discountEnabled ? parsedDiscountValue() : 0,
+          isInitialReservation: completeInitial ? false : true,
+          customer: {
+            name: guestName.trim(),
+            phone: guestPhone.trim(),
+            email: guestEmail.trim() || null,
+            emailVerificationToken: guestEmailVerificationToken || undefined,
+            address: guestAddress.trim() || null,
+            nationality: guestNationality.trim() || DEFAULT_NATIONALITY,
+            idType,
+            idNumber: idNumber.trim() || null,
+            registrationNumber: registrationNumber.trim() || null,
+            idDocPath: idDocuments[0]?.path || null,
+          },
+        })) as { success?: boolean; data?: { id: string }; error?: string; message?: string }
+
+        if (!res?.success) {
+          toast.error(res?.error || res?.message || 'Failed to update reservation')
+          return
+        }
+
+        finishReservation(
+          editBookingId,
+          false,
+          completeInitial ? 'completed' : 'updated'
+        )
+        return
+      }
+
+      const saveAsInitial = asInitial || (isInitialFlow && idDocuments.length === 0)
+
       const res = (await createReservationMutation.mutateAsync({
         customerId,
         company: formatGuestCompany(guestCompany),
+        companyLedgerId: companyLedgerId || undefined,
         roomId: selectedRoomId,
         checkIn: checkInDate,
         checkOut: checkOutDate,
@@ -480,11 +840,15 @@ export function NewReservationWizard() {
         advancePayment: parseFloat(advancePayment) || 0,
         paymentMethod: advancePaymentMethod,
         notes: reservationNotes.trim() || undefined,
-        idDocumentPaths:
-          idDocuments.length > 0 ? idDocuments.map((d) => d.path) : undefined,
+        idDocumentPaths: idPaths,
         vatApplied: true,
         vatPercent: effectiveVatPercent(),
         checkInNow: withCheckIn,
+        isInitialReservation: saveAsInitial,
+        withMeal,
+        discountEnabled,
+        discountType,
+        discountValue: discountEnabled ? parsedDiscountValue() : 0,
       })) as {
         success?: boolean
         data?: { id: string; status?: string }
@@ -508,32 +872,91 @@ export function NewReservationWizard() {
 
         if (!checkInRes?.success) {
           toast.error(checkInRes?.error || checkInRes?.message || 'Reservation saved but check-in failed')
-          finishReservation(bookingId, false)
+          finishReservation(bookingId, false, saveAsInitial ? 'initial' : 'full')
           return
         }
         didCheckIn = true
       }
 
-      finishReservation(bookingId, didCheckIn)
+      finishReservation(bookingId, didCheckIn, saveAsInitial ? 'initial' : 'full')
     } catch {
-      toast.error('Failed to create reservation')
+      toast.error(isEditMode ? 'Failed to update reservation' : 'Failed to create reservation')
     } finally {
       setIsSubmitting(false)
     }
   }
 
-  const handleConfirm = () => void submitReservation(false)
-  const handleConfirmWithCheckIn = () => void submitReservation(true)
+  const handleConfirm = () => void submitReservation({ withCheckIn: false })
+  const handleConfirmInitial = () => void submitReservation({ asInitial: true })
+  const handleCompleteInitial = () => void submitReservation({ completeInitial: true })
+  const handleConfirmWithCheckIn = () => void submitReservation({ withCheckIn: true })
 
   const hasRequiredIdDocs = idDocuments.length > 0
-  const guestDetailsReady =
-    guestMode === 'existing'
-      ? !!selectedCustomerId && !!guestName.trim() && !!guestPhone.trim()
-      : !!guestName.trim() && !!guestPhone.trim()
-  const canGoStep2 = guestDetailsReady && hasRequiredIdDocs
+  const hasIdActivity = idDocuments.length > 0 || Boolean(idNumber.trim())
+  const showCompleteRequiredMarkers = isEditMode
+    ? hasIdActivity
+    : !isInitialFlow && hasIdActivity
+  const completeReservationMissing = getCompleteReservationMissingFields({
+    nationality: guestNationality,
+    idNumber,
+    email: guestEmail,
+    address: guestAddress,
+    registrationNumber,
+    idDocumentCount: idDocuments.length,
+  })
+  const canCompleteReservation = completeReservationMissing.length === 0
+  const initialMissingFields = getInitialReservationGuestMissingFields(guestMode, {
+    selectedCustomerId,
+    guestName,
+    guestPhone,
+    guestNationality,
+  })
+  const guestDetailsReady = initialMissingFields.length === 0
+  /** Step 1: initial fields only, or all completion fields once ID entry has started / full reservation. */
+  const guestEmailInvalid = Boolean(guestEmail.trim()) && guestEmailBlocking
+  const canGoStep2 =
+    guestDetailsReady &&
+    !guestEmailInvalid &&
+    (isInitialFlow && !hasIdActivity ? true : completeReservationMissing.length === 0)
+  const canGoStep3 = datesValid && Boolean(selectedRoomId) && !roomsLoading
+  const advanceAmount = parseFloat(advancePayment) || 0
+  const canGoStep4 =
+    (!discountEnabled || parsedDiscountValue() > 0) &&
+    (advanceAmount <= 0 || (advanceAmount > 0 && advancePaymentMethod !== 'NONE'))
+  const canProceedToNextStep =
+    step === 1 ? canGoStep2 : step === 2 ? canGoStep3 : step === 3 ? canGoStep4 : true
+  const showInitialReservationOption =
+    !isEditMode && idDocuments.length === 0 && !hasIdActivity
+
+  useEffect(() => {
+    if (initialMissingFields.length === 0) {
+      setInitialFlowFieldError(null)
+    }
+  }, [initialMissingFields.length])
+
+  const handleStartInitialReservation = () => {
+    const missing = getInitialReservationGuestMissingFields(guestMode, {
+      selectedCustomerId,
+      guestName,
+      guestPhone,
+      guestNationality,
+    })
+    if (missing.length > 0) {
+      setInitialFlowFieldError(missing)
+      toast.error(`Please fill required fields: ${missing.join(', ')}`)
+      return
+    }
+    setInitialFlowFieldError(null)
+    setIsInitialFlow(true)
+    setStep(2)
+  }
   const showGuestDetails = guestMode === 'new' || !!selectedCustomerId
 
   const displayStep = completedReservationId ? 5 : step
+
+  if (isEditMode && editBookingLoading && !editDraftLoaded) {
+    return <p className="text-sm text-muted-foreground">Loading reservation…</p>
+  }
 
   return (
     <div className="space-y-6">
@@ -609,26 +1032,37 @@ export function NewReservationWizard() {
         <>
           {step === 1 && (
             <div className="space-y-4">
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant={guestMode === 'new' ? 'default' : 'outline'}
-                  size="sm"
-                  className={guestMode === 'new' ? 'bg-amber-600 hover:bg-amber-700' : ''}
-                  onClick={() => setGuestMode('new')}
-                >
-                  New guest
-                </Button>
-                <Button
-                  type="button"
-                  variant={guestMode === 'existing' ? 'default' : 'outline'}
-                  size="sm"
-                  className={guestMode === 'existing' ? 'bg-amber-600 hover:bg-amber-700' : ''}
-                  onClick={() => setGuestMode('existing')}
-                >
-                  Existing guest
-                </Button>
-              </div>
+              {!isEditMode && (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={guestMode === 'new' ? 'default' : 'outline'}
+                    size="sm"
+                    className={guestMode === 'new' ? 'bg-amber-600 hover:bg-amber-700' : ''}
+                    onClick={() => {
+                      setGuestMode('new')
+                      setIsInitialFlow(false)
+                    }}
+                  >
+                    New guest
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={guestMode === 'existing' ? 'default' : 'outline'}
+                    size="sm"
+                    className={guestMode === 'existing' ? 'bg-amber-600 hover:bg-amber-700' : ''}
+                    onClick={() => setGuestMode('existing')}
+                  >
+                    Existing guest
+                  </Button>
+                </div>
+              )}
+              {isEditMode && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Editing initial reservation — fill all fields marked * (NID, email, address,
+                  registration number, and ID images), then use Complete reservation before check-in.
+                </div>
+              )}
 
               {guestMode === 'existing' && (
                 <>
@@ -657,33 +1091,64 @@ export function NewReservationWizard() {
                   )}
                   {guestMode === 'existing' &&
                     existingDocsStatus === 'none' &&
-                    idDocuments.length === 0 && (
+                    showInitialReservationOption &&
+                    !isInitialFlow && (
                       <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                        No previous ID files found for this guest. Please upload or scan ID
-                        documents to continue — reservation cannot proceed without at least one
-                        image.
+                        No previous ID files found for this guest. Upload ID documents or use{' '}
+                        <strong>Initial reservation</strong> to continue without ID for now.
                       </div>
                     )}
-                  {guestMode === 'new' && idDocuments.length === 0 && (
+                  {guestMode === 'new' && showInitialReservationOption && !isInitialFlow && (
                     <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                      Upload or scan at least one ID image to continue — reservation cannot proceed
-                      without ID documents.
+                      Upload or scan at least one ID image to continue — or use{' '}
+                      <strong>Initial reservation</strong> below to save without ID for now.
+                    </div>
+                  )}
+                  {isInitialFlow && showInitialReservationOption && (
+                    <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+                      <strong>Initial reservation</strong> — guest name, phone, and nationality for
+                      now. NID and ID images can be added later before check-in. Missing fields will
+                      show on the confirmation document.
                     </div>
                   )}
 
+                  <NationalityField
+                    value={guestNationality}
+                    onChange={handleNationalityChange}
+                    label="Nationality *"
+                    placeholder="Select nationality…"
+                  />
+
+                  {showCompleteRequiredMarkers && (
+                    <p className="text-sm font-medium text-foreground">ID document images *</p>
+                  )}
+
                   <IdDocumentScanner
+                nationality={guestNationality}
                 idType={idType}
-                onIdTypeChange={(type) => patchGuest({ idType: type })}
-                documents={idDocuments}
-                onDocumentsChange={(docs) => {
-                  patchGuest({
-                    idDocuments: docs,
-                    ...(docs.length > 0 && guestMode === 'existing'
-                      ? { existingDocsStatus: 'found' as const }
-                      : {}),
-                  })
+                onIdTypeChange={(type) => {
+                  patchGuest({ idType: type })
+                  if (idDocuments.length > 0 || idNumber.trim()) {
+                    setIsInitialFlow(false)
+                    setIdEntryStarted(true)
+                  } else if (type === 'passport' || type === 'driving_license') {
+                    setIsInitialFlow(false)
+                    setIdEntryStarted(true)
+                  } else if (idDocuments.length === 0 && !idNumber.trim()) {
+                    revertToInitialStage()
+                  }
                 }}
-                onScanComplete={handleScanComplete}
+                documents={idDocuments}
+                onDocumentsChange={handleIdDocumentsChange}
+                onScanComplete={(result) => {
+                  if (result.documents.length > 0) {
+                    setIsInitialFlow(false)
+                    setIdEntryStarted(true)
+                    handleScanComplete(result)
+                  } else {
+                    revertToInitialStage()
+                  }
+                }}
               />
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -696,17 +1161,55 @@ export function NewReservationWizard() {
                     </div>
                     <div className="space-y-1">
                       <Label>Company</Label>
+                      <CompanyLedgerSearchField
+                        selectedLedgerId={companyLedgerId}
+                        selectedLabel={guestCompany}
+                        onSelect={(company) =>
+                          patchGuest({
+                            companyLedgerId: company.id,
+                            guestCompany: company.name,
+                          })
+                        }
+                        onClear={() =>
+                          patchGuest({
+                            companyLedgerId: '',
+                            guestCompany: DEFAULT_GUEST_COMPANY,
+                          })
+                        }
+                      />
+                      {companyLedgerId ? (
+                        <p className="text-xs text-muted-foreground">
+                          Guest will be added to this company ledger on reservation. Checkout can be
+                          billed to the company without payment.
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="space-y-1">
+                      <Label>
+                        NID / Passport number{showCompleteRequiredMarkers ? ' *' : ''}
+                      </Label>
                       <Input
-                        value={guestCompany}
-                        onChange={(e) => patchGuest({ guestCompany: e.target.value })}
-                        placeholder={DEFAULT_GUEST_COMPANY}
+                        value={idNumber}
+                        onChange={(e) => {
+                          const value = e.target.value
+                          if (value.trim()) {
+                            setIsInitialFlow(false)
+                            setIdEntryStarted(true)
+                          } else if (idDocuments.length === 0) {
+                            revertToInitialStage()
+                          }
+                          patchGuest({ idNumber: value })
+                        }}
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>NID / Passport number</Label>
+                      <Label>
+                        Registration number{showCompleteRequiredMarkers ? ' *' : ''}
+                      </Label>
                       <Input
-                        value={idNumber}
-                        onChange={(e) => patchGuest({ idNumber: e.target.value })}
+                        value={registrationNumber}
+                        onChange={(e) => patchGuest({ registrationNumber: e.target.value })}
+                        placeholder="Guest registration / reference no."
                       />
                     </div>
                     <div className="space-y-1">
@@ -718,14 +1221,19 @@ export function NewReservationWizard() {
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label>Email</Label>
-                      <Input
+                      <Label>Email{showCompleteRequiredMarkers ? ' *' : ''}</Label>
+                      <EmailInput
                         value={guestEmail}
-                        onChange={(e) => patchGuest({ guestEmail: e.target.value })}
+                        onChange={(email) => patchGuest({ guestEmail: email })}
+                        optional={!showCompleteRequiredMarkers}
+                        onValidationChange={(result) => {
+                          setGuestEmailBlocking(result.isBlocking)
+                          setGuestEmailVerificationToken(result.verificationToken ?? null)
+                        }}
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label>Address</Label>
+                    <div className="space-y-1 sm:col-span-2">
+                      <Label>Address{showCompleteRequiredMarkers ? ' *' : ''}</Label>
                       <Input
                         value={guestAddress}
                         onChange={(e) => patchGuest({ guestAddress: e.target.value })}
@@ -735,12 +1243,45 @@ export function NewReservationWizard() {
                   <p className="text-xs text-emerald-600 sm:col-span-2">
                     {idDocuments.length} ID image(s) attached — included on confirmation page 2
                   </p>
+                ) : isInitialFlow ? (
+                  <p className="text-xs text-sky-700 sm:col-span-2">
+                    ID images optional for initial reservation
+                    {showCompleteRequiredMarkers ? ' (required * to complete)' : ' — add before check-in'}.
+                  </p>
                 ) : (
                   <p className="text-xs text-amber-700 sm:col-span-2">
-                    At least one ID image is required to go to the next step.
+                    At least one ID image is required, or continue as initial reservation below.
                   </p>
                 )}
               </div>
+                </>
+              )}
+              {showInitialReservationOption && (
+                <>
+                  {initialFlowFieldError && initialFlowFieldError.length > 0 && (
+                    <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
+                      <p className="font-medium">Required fields to continue as initial reservation:</p>
+                      <ul className="mt-1 list-disc pl-5">
+                        {initialFlowFieldError.map((field) => (
+                          <li key={field}>{field}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full border-sky-400 text-sky-800 hover:bg-sky-50"
+                    onClick={handleStartInitialReservation}
+                  >
+                    <FilePenLine className="h-4 w-4 mr-2" />
+                    Continue as initial reservation (without ID for now)
+                  </Button>
+                  <p className="text-xs text-muted-foreground text-center">
+                    Requires full name, phone, and nationality
+                    {guestMode === 'existing' ? ', and guest selection' : ''}. NID and ID images can
+                    be added later.
+                  </p>
                 </>
               )}
             </div>
@@ -818,6 +1359,41 @@ export function NewReservationWizard() {
                   </p>
                 )}
               </div>
+              <Card className="border-amber-200 bg-amber-50/40">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-amber-900">Meal plan</p>
+                      <p className="text-xs text-muted-foreground">
+                        {withMeal
+                          ? 'Full board with breakfast complimentary — shown on confirmation document'
+                          : 'Breakfast (complementary) — shown on confirmation document'}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`text-xs font-medium ${!withMeal ? 'text-amber-900' : 'text-muted-foreground'}`}
+                      >
+                        Without meal
+                      </span>
+                      <Switch
+                        checked={withMeal}
+                        onCheckedChange={(on) => patchStay({ withMeal: on })}
+                        aria-label="With meal"
+                      />
+                      <span
+                        className={`text-xs font-medium ${withMeal ? 'text-amber-900' : 'text-muted-foreground'}`}
+                      >
+                        With meal
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-amber-800">
+                    Meal plan on document:{' '}
+                    <strong>{formatReservationMealPlan(withMeal)}</strong>
+                  </p>
+                </CardContent>
+              </Card>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Adults</Label>
@@ -902,6 +1478,61 @@ export function NewReservationWizard() {
                   )}
                 </CardContent>
               </Card>
+              <Card className="border-emerald-200 bg-emerald-50/40">
+                <CardContent className="p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-emerald-900">Discount</p>
+                      <p className="text-xs text-muted-foreground">
+                        Applied to room charge before VAT
+                      </p>
+                    </div>
+                    <Switch
+                      checked={discountEnabled}
+                      onCheckedChange={(on) => {
+                        patchPayment({
+                          discountEnabled: on,
+                          ...(!on ? { discountValue: '' } : {}),
+                        })
+                      }}
+                    />
+                  </div>
+                  {discountEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Discount type</Label>
+                        <Select
+                          value={discountType}
+                          onValueChange={(value) =>
+                            patchPayment({ discountType: value as BookingDiscountType })
+                          }
+                        >
+                          <SelectTrigger className="h-9 bg-card">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="PERCENTAGE">Percentage (%)</SelectItem>
+                            <SelectItem value="FIXED">Fixed amount (BDT)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">
+                          {discountType === 'PERCENTAGE' ? 'Discount (%)' : 'Discount (BDT)'}
+                        </Label>
+                        <Input
+                          type="text"
+                          inputMode="decimal"
+                          value={discountValue}
+                          onChange={(e) => patchPayment({ discountValue: e.target.value })}
+                          placeholder={discountType === 'PERCENTAGE' ? 'e.g. 10' : 'e.g. 500'}
+                          className="h-9 bg-card"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-2">
                   <Label>Advance payment (BDT)</Label>
@@ -940,6 +1571,15 @@ export function NewReservationWizard() {
                     <span>Room charge</span>
                     <span>৳{estimatedRoomCharge().toLocaleString()}</span>
                   </div>
+                  {discountEnabled && estimatedTotals().discountAmount > 0 && (
+                    <div className="flex justify-between text-emerald-700">
+                      <span>
+                        Discount
+                        {discountType === 'PERCENTAGE' ? ` (${parsedDiscountValue()}%)` : ''}
+                      </span>
+                      <span>-৳{estimatedTotals().discountAmount.toLocaleString()}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span>VAT ({effectiveVatPercent()}%)</span>
                     <span>৳{estimatedTotals().vatAmount.toLocaleString()}</span>
@@ -996,6 +1636,16 @@ export function NewReservationWizard() {
                   <span>{checkInDate ? formatCheckIn(checkInDate) : '—'}</span>
                   <span className="text-muted-foreground">Check-out</span>
                   <span>{checkOutDate ? formatCheckOut(checkOutDate) : '—'}</span>
+                  <span className="text-muted-foreground">Meal plan</span>
+                  <span>{formatReservationMealPlan(withMeal)}</span>
+                  {discountEnabled && estimatedTotals().discountAmount > 0 && (
+                    <>
+                      <span className="text-muted-foreground">Discount</span>
+                      <span className="text-emerald-700">
+                        -৳{estimatedTotals().discountAmount.toLocaleString()}
+                      </span>
+                    </>
+                  )}
                   <span className="text-muted-foreground">
                     Total (incl. VAT)
                   </span>
@@ -1016,10 +1666,24 @@ export function NewReservationWizard() {
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground pt-2">
-                  Use <strong>Confirm reservation</strong> to save as reserved only, or{' '}
-                  <strong>Confirm reservation with check-in</strong> to check the guest in immediately
-                  (room marked occupied). The confirmation document appears on the next step for print
-                  and PDF download.
+                  {isInitialFlow && !hasRequiredIdDocs ? (
+                    <>
+                      Use <strong>Save initial reservation</strong> to save without ID. You can edit
+                      and complete guest details from bookings before check-in.
+                    </>
+                  ) : isEditMode ? (
+                    <>
+                      Use <strong>Save changes</strong> to keep as initial, or{' '}
+                      <strong>Complete reservation</strong> when all fields marked * are filled,
+                      including ID images.
+                    </>
+                  ) : (
+                    <>
+                      Use <strong>Confirm reservation</strong> to save as reserved only, or{' '}
+                      <strong>Confirm reservation with check-in</strong> to check the guest in
+                      immediately (room marked occupied).
+                    </>
+                  )}
                 </p>
               </CardContent>
             </Card>
@@ -1034,29 +1698,59 @@ export function NewReservationWizard() {
             {step < 4 ? (
               <Button
                 className="bg-amber-600 hover:bg-amber-700 text-white ml-auto"
-                disabled={step === 1 && !canGoStep2}
+                disabled={!canProceedToNextStep}
                 onClick={() => setStep(Math.min(4, step + 1))}
               >
                 Next
               </Button>
             ) : (
               <>
-                <Button
-                  variant="outline"
-                  className="ml-auto"
-                  disabled={isSubmitting || createCustomerMutation.isPending}
-                  onClick={handleConfirm}
-                >
-                  {isSubmitting ? 'Please wait...' : 'Confirm reservation'}
-                </Button>
-                <Button
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                  disabled={isSubmitting || createCustomerMutation.isPending}
-                  onClick={handleConfirmWithCheckIn}
-                >
-                  <LogIn className="h-4 w-4 mr-2" />
-                  {isSubmitting ? 'Processing...' : 'Confirm reservation with check-in'}
-                </Button>
+                {isEditMode ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      className="ml-auto"
+                      disabled={isSubmitting}
+                      onClick={() => void submitReservation({})}
+                    >
+                      {isSubmitting ? 'Please wait...' : 'Save changes'}
+                    </Button>
+                    <Button
+                      className="bg-amber-600 hover:bg-amber-700 text-white"
+                      disabled={isSubmitting || !canCompleteReservation}
+                      onClick={handleCompleteInitial}
+                    >
+                      {isSubmitting ? 'Please wait...' : 'Complete reservation'}
+                    </Button>
+                  </>
+                ) : isInitialFlow && !hasRequiredIdDocs ? (
+                  <Button
+                    className="bg-sky-600 hover:bg-sky-700 text-white ml-auto"
+                    disabled={isSubmitting || createCustomerMutation.isPending}
+                    onClick={handleConfirmInitial}
+                  >
+                    {isSubmitting ? 'Please wait...' : 'Save initial reservation'}
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      variant="outline"
+                      className="ml-auto"
+                      disabled={isSubmitting || createCustomerMutation.isPending}
+                      onClick={handleConfirm}
+                    >
+                      {isSubmitting ? 'Please wait...' : 'Confirm reservation'}
+                    </Button>
+                    <Button
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                      disabled={isSubmitting || createCustomerMutation.isPending}
+                      onClick={handleConfirmWithCheckIn}
+                    >
+                      <LogIn className="h-4 w-4 mr-2" />
+                      {isSubmitting ? 'Processing...' : 'Confirm reservation with check-in'}
+                    </Button>
+                  </>
+                )}
               </>
             )}
           </div>

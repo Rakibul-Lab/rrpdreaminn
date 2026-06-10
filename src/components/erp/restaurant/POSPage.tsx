@@ -19,6 +19,11 @@ import {
   Leaf,
   ChefHat,
   Send,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  CheckCircle2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -82,6 +87,13 @@ interface RestaurantTable {
   location: string | null
 }
 
+interface RestaurantWaiter {
+  id: string
+  name: string
+  phone: string | null
+  role?: string
+}
+
 interface CartItem {
   menuItem: MenuItem
   quantity: number
@@ -89,6 +101,80 @@ interface CartItem {
 
 type OrderType = 'DINE_IN' | 'TAKEAWAY' | 'ROOM_SERVICE'
 type DiscountType = 'PERCENTAGE' | 'AMOUNT'
+type PosOrderStatus = 'PENDING' | 'COOKING' | 'READY' | 'DELIVERED'
+
+interface PosOrderItem {
+  id: string
+  quantity: number
+  menuItem: { id: string; name: string; price: number; isVeg: boolean }
+}
+
+interface PosOrder {
+  id: string
+  orderNumber: string
+  orderType: OrderType
+  status: PosOrderStatus
+  customerName: string | null
+  totalAmount: number
+  notes: string | null
+  createdAt: string
+  items: PosOrderItem[]
+  room: { roomNumber: string } | null
+  table: { tableNumber: string } | null
+}
+
+const POS_STATUS_STEPS: {
+  key: PosOrderStatus
+  label: string
+  icon: typeof Clock
+  className: string
+  panelTitle: string
+}[] = [
+  {
+    key: 'PENDING',
+    label: 'Pending',
+    icon: Clock,
+    className: 'border-amber-400/40 bg-amber-500/10 text-amber-300',
+    panelTitle: "Today's Pending Orders",
+  },
+  {
+    key: 'COOKING',
+    label: 'Cooking',
+    icon: Flame,
+    className: 'border-orange-400/40 bg-orange-500/10 text-orange-300',
+    panelTitle: "Today's Cooking Orders",
+  },
+  {
+    key: 'READY',
+    label: 'Ready',
+    icon: CheckCircle2,
+    className: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300',
+    panelTitle: "Today's Ready Orders",
+  },
+  {
+    key: 'DELIVERED',
+    label: 'Delivered',
+    icon: CheckCircle2,
+    className: 'border-slate-400/40 bg-slate-500/10 text-slate-200',
+    panelTitle: "Today's Delivered Orders",
+  },
+]
+
+const POS_STATUS_NEXT: Record<
+  PosOrderStatus,
+  { next: PosOrderStatus | null; label: string; buttonClass: string }
+> = {
+  PENDING: { next: 'COOKING', label: 'Start Cooking', buttonClass: 'bg-amber-600 hover:bg-amber-700' },
+  COOKING: { next: 'READY', label: 'Mark Ready', buttonClass: 'bg-orange-600 hover:bg-orange-700' },
+  READY: { next: 'DELIVERED', label: 'Mark Delivered', buttonClass: 'bg-emerald-600 hover:bg-emerald-700' },
+  DELIVERED: { next: null, label: '', buttonClass: '' },
+}
+
+const POS_ORDER_TYPE_ICON: Record<OrderType, { icon: typeof UtensilsCrossed; label: string }> = {
+  DINE_IN: { icon: UtensilsCrossed, label: 'Dine-in' },
+  TAKEAWAY: { icon: ShoppingBag, label: 'Takeaway' },
+  ROOM_SERVICE: { icon: BedDouble, label: 'Room Svc' },
+}
 
 function buildFoodPlaceholderSrc(itemId: string, itemName: string, width: number, height: number) {
   const params = new URLSearchParams({
@@ -162,12 +248,17 @@ export default function POSPage() {
   const [orderType, setOrderType] = useState<OrderType>('ROOM_SERVICE')
   const [tableId, setTableId] = useState<string>('')
   const [roomId, setRoomId] = useState<string>('')
+  const [waiterId, setWaiterId] = useState<string>('')
+  const [roomServiceStep, setRoomServiceStep] = useState<1 | 2 | 3>(1)
+  const [roomServiceSetupComplete, setRoomServiceSetupComplete] = useState(false)
+  const [roomServiceSummaryExpanded, setRoomServiceSummaryExpanded] = useState(false)
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [discount, setDiscount] = useState<number>(0)
   const [discountType, setDiscountType] = useState<DiscountType>('PERCENTAGE')
   const [notes, setNotes] = useState('')
   const [showNotes, setShowNotes] = useState(false)
+  const [activeStatusPanel, setActiveStatusPanel] = useState<PosOrderStatus | null>(null)
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(new Date()), 1000)
@@ -199,14 +290,75 @@ export default function POSPage() {
   })
   const occupiedRooms = occupiedRoomsData?.data || []
 
-  // Fetch restaurant tables
+  // Fetch restaurant tables (dine-in + room service)
   const { data: tablesData, isLoading: tablesLoading } = useQuery({
     queryKey: ['restaurant-tables'],
     queryFn: () =>
       api.get<{ success: boolean; data: RestaurantTable[] }>('/restaurant-tables'),
-    enabled: orderType === 'DINE_IN',
+    enabled: orderType === 'DINE_IN' || orderType === 'ROOM_SERVICE',
   })
   const tables = tablesData?.data || []
+
+  const { data: waitersData, isLoading: waitersLoading } = useQuery({
+    queryKey: ['restaurant-waiters', 'pos'],
+    queryFn: () =>
+      api.get<{ success: boolean; data: RestaurantWaiter[] }>('/restaurant-waiters?forPos=1'),
+    enabled: orderType === 'ROOM_SERVICE',
+  })
+  const waiters = waitersData?.data || []
+
+  const { data: todayStatsData } = useQuery({
+    queryKey: ['restaurant-orders', 'stats', 'today'],
+    queryFn: () =>
+      api.get<{
+        success: boolean
+        data: {
+          date: string
+          counts: { PENDING: number; COOKING: number; READY: number; DELIVERED: number }
+        }
+      }>('/restaurant-orders/stats/today'),
+    enabled: !!user,
+    refetchInterval: 15_000,
+  })
+  const todayOrderCounts = todayStatsData?.data?.counts ?? {
+    PENDING: 0,
+    COOKING: 0,
+    READY: 0,
+    DELIVERED: 0,
+  }
+
+  const { data: statusOrdersData, isLoading: statusOrdersLoading } = useQuery({
+    queryKey: ['pos-today-orders', activeStatusPanel],
+    queryFn: () =>
+      api.get<{ success: boolean; data: PosOrder[] }>(
+        `/restaurant-orders?status=${activeStatusPanel}&today=1&limit=100`
+      ),
+    enabled: !!activeStatusPanel,
+    refetchInterval: activeStatusPanel ? 10_000 : false,
+  })
+  const statusPanelOrders = statusOrdersData?.data ?? []
+
+  const statusUpdateMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: PosOrderStatus }) =>
+      api.patch(`/restaurant-orders/${id}/status`, { status }),
+    onSuccess: (_, variables) => {
+      const updatedLabels: Partial<Record<PosOrderStatus, string>> = {
+        COOKING: 'moved to Cooking',
+        READY: 'marked as Ready',
+        DELIVERED: 'marked as Delivered',
+      }
+      toast.success(`Order ${updatedLabels[variables.status] ?? 'updated'}`)
+      queryClient.invalidateQueries({ queryKey: ['pos-today-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['restaurant-orders', 'stats', 'today'] })
+      queryClient.invalidateQueries({ queryKey: ['restaurant-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['kitchen-orders'] })
+    },
+    onError: (error: Error) => {
+      toast.error('Failed to update order', { description: error.message })
+    },
+  })
+
+  const activeStatusPanelMeta = POS_STATUS_STEPS.find((s) => s.key === activeStatusPanel)
 
   // Place order mutation
   const placeOrderMutation = useMutation({
@@ -224,9 +376,13 @@ export default function POSPage() {
       setShowNotes(false)
       setTableId('')
       setRoomId('')
+      setWaiterId('')
+      setRoomServiceStep(1)
+      setRoomServiceSetupComplete(false)
       setCustomerName('')
       setCustomerPhone('')
       queryClient.invalidateQueries({ queryKey: ['restaurant-orders'] })
+      queryClient.invalidateQueries({ queryKey: ['restaurant-orders', 'stats', 'today'] })
       queryClient.invalidateQueries({ queryKey: ['restaurant-tables'] })
     },
     onError: (error: Error) => {
@@ -264,10 +420,75 @@ export default function POSPage() {
     })
   }, [])
 
+  const roomServiceReady =
+    orderType !== 'ROOM_SERVICE' ||
+    (roomServiceSetupComplete && !!(roomId && waiterId && tableId))
+
+  const guardFoodSelection = useCallback(() => {
+    if (orderType === 'ROOM_SERVICE' && !roomServiceReady) {
+      toast.error('Complete room service setup', {
+        description: 'Use Next on the right panel to finish room, waiter, and table.',
+      })
+      return false
+    }
+    return true
+  }, [orderType, roomServiceReady])
+
+  const resetRoomServiceSetup = useCallback(() => {
+    setRoomId('')
+    setWaiterId('')
+    setTableId('')
+    setRoomServiceStep(1)
+    setRoomServiceSetupComplete(false)
+    setRoomServiceSummaryExpanded(false)
+  }, [])
+
+  const handleRoomServiceNext = () => {
+    if (roomServiceStep === 1) {
+      if (!roomId) {
+        toast.error('Select a room', { description: 'Choose an occupied room to continue.' })
+        return
+      }
+      setRoomServiceStep(2)
+      return
+    }
+    if (roomServiceStep === 2) {
+      if (!waiterId) {
+        toast.error('Select a waiter', { description: 'Choose a waiter to continue.' })
+        return
+      }
+      setRoomServiceStep(3)
+      return
+    }
+    if (roomServiceStep === 3) {
+      if (!tableId) {
+        toast.error('Select a table', { description: 'Choose a table to finish setup.' })
+        return
+      }
+      setRoomServiceSetupComplete(true)
+      setRoomServiceSummaryExpanded(false)
+      toast.success('Room service ready', { description: 'You can now add food items.' })
+    }
+  }
+
+  const handleRoomServiceBack = () => {
+    if (roomServiceStep === 3) {
+      setTableId('')
+      setRoomServiceStep(2)
+      return
+    }
+    if (roomServiceStep === 2) {
+      setWaiterId('')
+      setTableId('')
+      setRoomServiceStep(1)
+    }
+  }
+
   const openQuantityDialog = useCallback((menuItem: MenuItem) => {
+    if (!guardFoodSelection()) return
     setQuantityDialogItem(menuItem)
     setQuantityDialogQty(1)
-  }, [])
+  }, [guardFoodSelection])
 
   const closeQuantityDialog = useCallback(() => {
     setQuantityDialogItem(null)
@@ -355,8 +576,10 @@ export default function POSPage() {
       return
     }
 
-    if (orderType === 'ROOM_SERVICE' && !roomId) {
-      toast.error('Room required', { description: 'Please select an occupied room for room service.' })
+    if (orderType === 'ROOM_SERVICE' && !roomServiceReady) {
+      toast.error('Complete room service setup', {
+        description: 'Finish all steps (room, waiter, table) before placing the order.',
+      })
       return
     }
 
@@ -390,6 +613,8 @@ export default function POSPage() {
     }
     if (orderType === 'ROOM_SERVICE') {
       orderData.roomId = roomId
+      orderData.waiterId = waiterId
+      orderData.tableId = tableId
     }
     if (orderType === 'TAKEAWAY') {
       orderData.customerName = customerName.trim()
@@ -403,13 +628,24 @@ export default function POSPage() {
   const availableTables = tables.filter((t) => t.status === 'available')
 
   const selectedRoom = occupiedRooms.find((r) => r.room_id === roomId)
-  const selectedTable = availableTables.find((t) => t.id === tableId)
+  const selectedWaiter = waiters.find((w) => w.id === waiterId)
+  const selectedTable =
+    (orderType === 'DINE_IN' ? availableTables : tables).find((t) => t.id === tableId) ??
+    tables.find((t) => t.id === tableId)
 
   const filterOccupiedRoom = useCallback((room: OccupiedRoom, query: string) => {
     const q = query.toLowerCase()
     return (
       room.room_number.toLowerCase().includes(q) ||
       room.room_type.toLowerCase().includes(q)
+    )
+  }, [])
+
+  const filterWaiter = useCallback((waiter: RestaurantWaiter, query: string) => {
+    const q = query.toLowerCase()
+    return (
+      waiter.name.toLowerCase().includes(q) ||
+      (waiter.phone?.toLowerCase().includes(q) ?? false)
     )
   }, [])
 
@@ -436,8 +672,8 @@ export default function POSPage() {
       {/* Left Panel - Menu */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
+        <div className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="w-9 h-9 rounded-lg bg-amber-500 flex items-center justify-center">
               <ChefHat className="w-5 h-5 text-white" />
             </div>
@@ -446,7 +682,25 @@ export default function POSPage() {
               <p className="text-xs text-slate-300">Restaurant POS</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+
+          <div className="hidden md:flex items-center gap-2 flex-1 justify-center min-w-0 flex-wrap">
+            {POS_STATUS_STEPS.map(({ key, label, icon: Icon, className }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActiveStatusPanel(key)}
+                className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-all cursor-pointer hover:brightness-110 ${className} ${
+                  activeStatusPanel === key ? 'ring-2 ring-white/50 scale-[1.02]' : ''
+                }`}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="font-medium">{label}</span>
+                <span className="font-bold tabular-nums">{todayOrderCounts[key]}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
             <Badge variant="outline" className="border-amber-500/50 text-amber-400 text-xs">
               {user?.name || 'Staff'}
             </Badge>
@@ -466,12 +720,34 @@ export default function POSPage() {
           </div>
         </div>
 
+        <div className="flex md:hidden items-center gap-1.5 px-3 py-2 bg-slate-800 border-b border-slate-700 shrink-0 overflow-x-auto">
+          {POS_STATUS_STEPS.map(({ key, label, icon: Icon, className }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setActiveStatusPanel(key)}
+              className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] shrink-0 transition-all ${className} ${
+                activeStatusPanel === key ? 'ring-2 ring-white/50' : ''
+              }`}
+            >
+              <Icon className="h-3 w-3 shrink-0" />
+              <span>{label}</span>
+              <span className="font-bold tabular-nums">{todayOrderCounts[key]}</span>
+            </button>
+          ))}
+        </div>
+
         {/* Search Bar */}
         <div className="px-4 py-3 bg-card border-b shrink-0">
           <PosLiveSearchField
-            placeholder="Search menu items… (↑↓ navigate, Enter to select)"
+            placeholder={
+              orderType === 'ROOM_SERVICE' && !roomServiceReady
+                ? 'Complete room service setup to search items…'
+                : 'Search menu items… (↑↓ navigate, Enter to select)'
+            }
             items={availableMenuItems}
             isLoading={menuLoading}
+            disabled={orderType === 'ROOM_SERVICE' && !roomServiceReady}
             getItemId={(item) => item.id}
             getItemLabel={(item) => item.name}
             getItemSublabel={(item) =>
@@ -549,7 +825,8 @@ export default function POSPage() {
                   <button
                     key={item.id}
                     onClick={() => openQuantityDialog(item)}
-                    className={`text-left bg-card rounded-lg border-2 p-2 transition-all hover:shadow-md active:scale-[0.98] ${
+                    disabled={orderType === 'ROOM_SERVICE' && !roomServiceReady}
+                    className={`text-left bg-card rounded-lg border-2 p-2 transition-all hover:shadow-md active:scale-[0.98] disabled:opacity-55 disabled:cursor-not-allowed disabled:hover:shadow-none ${
                       inCart
                         ? 'border-amber-400 shadow-sm bg-amber-50/50'
                         : 'border-border hover:border-amber-200'
@@ -635,6 +912,10 @@ export default function POSPage() {
                   setOrderType(type)
                   setTableId('')
                   setRoomId('')
+                  setWaiterId('')
+                  setRoomServiceStep(1)
+                  setRoomServiceSetupComplete(false)
+                  setRoomServiceSummaryExpanded(false)
                   setCustomerName('')
                   setCustomerPhone('')
                 }}
@@ -678,28 +959,196 @@ export default function POSPage() {
             />
           )}
 
-          {orderType === 'ROOM_SERVICE' && (
-            <PosLiveSearchField
-              label="Select Occupied Room"
-              placeholder="Search room number or type…"
-              selectedId={roomId}
-              selectedLabel={
-                selectedRoom
-                  ? `Room ${selectedRoom.room_number} (${selectedRoom.room_type})`
-                  : undefined
-              }
-              items={occupiedRooms}
-              isLoading={roomsLoading}
-              getItemId={(r) => r.room_id}
-              getItemLabel={(r) => `Room ${r.room_number}`}
-              getItemSublabel={(r) => r.room_type}
-              filterItem={filterOccupiedRoom}
-              onSelect={(r) => setRoomId(r.room_id)}
-              onClear={() => setRoomId('')}
-              emptyMessage="No occupied rooms available for room service"
-              noResultsMessage="No rooms match your search"
-            />
-          )}
+          {orderType === 'ROOM_SERVICE' && roomServiceSetupComplete && roomServiceReady ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setRoomServiceSummaryExpanded((v) => !v)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-emerald-100/50 transition-colors"
+              >
+                <BedDouble className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-emerald-900">Room service</p>
+                  {!roomServiceSummaryExpanded && (
+                    <p className="truncate text-[11px] text-emerald-800">
+                      {selectedRoom ? `Room ${selectedRoom.room_number}` : '—'}
+                      {' · '}
+                      {selectedWaiter?.name ?? '—'}
+                      {' · '}
+                      {selectedTable ? `Table ${selectedTable.tableNumber}` : '—'}
+                    </p>
+                  )}
+                </div>
+                {roomServiceSummaryExpanded ? (
+                  <ChevronUp className="h-4 w-4 shrink-0 text-emerald-700" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 shrink-0 text-emerald-700" />
+                )}
+              </button>
+              {roomServiceSummaryExpanded && (
+                <div className="space-y-2 border-t border-emerald-200 px-3 pb-3 pt-2">
+                  <div className="space-y-1 text-xs text-emerald-950">
+                    <p>
+                      <span className="text-emerald-800">Room:</span>{' '}
+                      {selectedRoom ? `Room ${selectedRoom.room_number}` : '—'}
+                    </p>
+                    <p>
+                      <span className="text-emerald-800">Waiter:</span>{' '}
+                      {selectedWaiter?.name ?? '—'}
+                    </p>
+                    <p>
+                      <span className="text-emerald-800">Table:</span>{' '}
+                      {selectedTable ? `Table ${selectedTable.tableNumber}` : '—'}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 w-full text-xs"
+                    onClick={resetRoomServiceSetup}
+                  >
+                    Change setup
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : orderType === 'ROOM_SERVICE' ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-foreground">Room service</p>
+                <div className="flex items-center gap-1">
+                  {[1, 2, 3].map((step) => (
+                    <span
+                      key={step}
+                      className={`h-1.5 w-6 rounded-full ${
+                        step === roomServiceStep
+                          ? 'bg-amber-500'
+                          : step < roomServiceStep
+                            ? 'bg-amber-300'
+                            : 'bg-muted-foreground/25'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {roomServiceStep === 1 && (
+                <PosLiveSearchField
+                  label="Step 1 — Room number"
+                  placeholder="Search room number or type…"
+                  selectedId={roomId}
+                  selectedLabel={
+                    selectedRoom
+                      ? `Room ${selectedRoom.room_number} (${selectedRoom.room_type})`
+                      : undefined
+                  }
+                  items={occupiedRooms}
+                  isLoading={roomsLoading}
+                  getItemId={(r) => r.room_id}
+                  getItemLabel={(r) => `Room ${r.room_number}`}
+                  getItemSublabel={(r) => r.room_type}
+                  filterItem={filterOccupiedRoom}
+                  onSelect={(r) => {
+                    setRoomId(r.room_id)
+                    setWaiterId('')
+                    setTableId('')
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  onClear={() => {
+                    setRoomId('')
+                    setWaiterId('')
+                    setTableId('')
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  emptyMessage="No occupied rooms available for room service"
+                  noResultsMessage="No rooms match your search"
+                />
+              )}
+
+              {roomServiceStep === 2 && (
+                <PosLiveSearchField
+                  label="Step 2 — Waiter"
+                  placeholder="Search waiter name…"
+                  selectedId={waiterId}
+                  selectedLabel={selectedWaiter?.name}
+                  items={waiters}
+                  isLoading={waitersLoading}
+                  getItemId={(w) => w.id}
+                  getItemLabel={(w) => w.name}
+                  getItemSublabel={(w) => w.phone || 'Restaurant staff'}
+                  filterItem={filterWaiter}
+                  onSelect={(w) => {
+                    setWaiterId(w.id)
+                    setTableId('')
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  onClear={() => {
+                    setWaiterId('')
+                    setTableId('')
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  emptyMessage="No waiters available"
+                  noResultsMessage="No waiters match your search"
+                />
+              )}
+
+              {roomServiceStep === 3 && (
+                <PosLiveSearchField
+                  label="Step 3 — Table"
+                  placeholder="Search table number…"
+                  selectedId={tableId}
+                  selectedLabel={
+                    selectedTable
+                      ? `Table ${selectedTable.tableNumber}${selectedTable.location ? ` · ${selectedTable.location}` : ''}`
+                      : undefined
+                  }
+                  items={tables}
+                  isLoading={tablesLoading}
+                  getItemId={(t) => t.id}
+                  getItemLabel={(t) => `Table ${t.tableNumber}`}
+                  getItemSublabel={(t) =>
+                    `${t.capacity} seats${t.location ? ` · ${t.location}` : ''} · ${t.status}`
+                  }
+                  filterItem={filterTable}
+                  onSelect={(t) => {
+                    setTableId(t.id)
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  onClear={() => {
+                    setTableId('')
+                    setRoomServiceSetupComplete(false)
+                  }}
+                  emptyMessage="No tables found"
+                  noResultsMessage="No tables match your search"
+                />
+              )}
+
+              <div className="flex gap-2 pt-1">
+                {roomServiceStep > 1 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 h-9"
+                    onClick={handleRoomServiceBack}
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Back
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="flex-1 h-9 bg-amber-600 hover:bg-amber-700 text-white"
+                  onClick={handleRoomServiceNext}
+                >
+                  {roomServiceStep === 3 ? 'Finish' : 'Next'}
+                  {roomServiceStep < 3 && <ChevronRight className="h-4 w-4 ml-1" />}
+                </Button>
+              </div>
+            </div>
+          ) : null}
 
           {orderType === 'TAKEAWAY' && (
             <div className="space-y-2">
@@ -891,6 +1340,142 @@ export default function POSPage() {
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={!!activeStatusPanel}
+        onOpenChange={(open) => !open && setActiveStatusPanel(null)}
+      >
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b shrink-0">
+            <DialogTitle>{activeStatusPanelMeta?.panelTitle ?? "Today's Orders"}</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              {activeStatusPanel
+                ? `${todayOrderCounts[activeStatusPanel]} order${todayOrderCounts[activeStatusPanel] === 1 ? '' : 's'} — tap an action to move to the next stage`
+                : ''}
+            </p>
+          </DialogHeader>
+
+          <ScrollArea className="flex-1 max-h-[calc(85vh-8rem)] px-6 py-4">
+            {statusOrdersLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-32 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : statusPanelOrders.length === 0 ? (
+              <div className="py-12 text-center text-muted-foreground">
+                <ChefHat className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">No orders in this stage for today.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {statusPanelOrders.map((order) => {
+                  const typeCfg = POS_ORDER_TYPE_ICON[order.orderType]
+                  const TypeIcon = typeCfg.icon
+                  const nextStep = activeStatusPanel ? POS_STATUS_NEXT[activeStatusPanel] : null
+
+                  return (
+                    <div key={order.id} className="rounded-lg border bg-card p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold font-mono text-sm">{order.orderNumber}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {new Date(order.createdAt).toLocaleTimeString('en-US', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 justify-end">
+                          <Badge variant="outline" className="text-[10px] h-5 gap-1">
+                            <TypeIcon className="h-3 w-3" />
+                            {typeCfg.label}
+                          </Badge>
+                          {order.orderType === 'DINE_IN' && order.table && (
+                            <Badge variant="outline" className="text-[10px] h-5">
+                              Table {order.table.tableNumber}
+                            </Badge>
+                          )}
+                          {order.orderType === 'ROOM_SERVICE' && order.room && (
+                            <Badge variant="outline" className="text-[10px] h-5">
+                              Room {order.room.roomNumber}
+                            </Badge>
+                          )}
+                          {order.orderType === 'TAKEAWAY' && order.customerName && (
+                            <Badge variant="outline" className="text-[10px] h-5">
+                              {order.customerName}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        {order.items.map((item) => (
+                          <div key={item.id} className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className={`w-2 h-2 rounded-full shrink-0 ${
+                                  item.menuItem.isVeg ? 'bg-green-500' : 'bg-red-500'
+                                }`}
+                              />
+                              <span className="truncate">{item.menuItem.name}</span>
+                            </div>
+                            <Badge variant="secondary" className="text-xs h-5 shrink-0">
+                              ×{item.quantity}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+
+                      {order.notes && (
+                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 px-2 py-1 rounded">
+                          {order.notes}
+                        </p>
+                      )}
+
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-sm font-semibold">৳{order.totalAmount.toFixed(0)}</span>
+                        {nextStep?.next ? (
+                          <Button
+                            size="sm"
+                            className={`h-8 text-xs text-white ${nextStep.buttonClass}`}
+                            disabled={statusUpdateMutation.isPending}
+                            onClick={() =>
+                              statusUpdateMutation.mutate({
+                                id: order.id,
+                                status: nextStep.next!,
+                              })
+                            }
+                          >
+                            {nextStep.next === 'COOKING' && <Flame className="h-3.5 w-3.5 mr-1" />}
+                            {nextStep.next === 'READY' && (
+                              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            {nextStep.next === 'DELIVERED' && (
+                              <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            {nextStep.label}
+                          </Button>
+                        ) : (
+                          <Badge variant="secondary" className="text-xs">
+                            Completed
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </ScrollArea>
+
+          <DialogFooter className="px-6 py-4 border-t shrink-0">
+            <Button type="button" variant="outline" onClick={() => setActiveStatusPanel(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Quantity dialog — opened when selecting from menu search */}
       <Dialog

@@ -141,7 +141,7 @@ export async function POST(
         });
       }
 
-      if (booking.status === 'CHECKED_IN') {
+      if (booking.status === 'CHECKED_IN' || booking.status === 'RESERVED') {
         await tx.room.update({
           where: { id: booking.roomId },
           data: { status: 'AVAILABLE' },

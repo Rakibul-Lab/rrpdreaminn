@@ -97,6 +97,7 @@ const BOOKING_STATUS_FILTER_LABELS: Record<string, string> = {
   CHECKED_IN: 'Checked In',
   CHECKED_OUT: 'Checked Out',
   CANCELLED: 'Cancelled',
+  COMPANY: 'Company',
 }
 
 export function formatBookingStatusFilterLabel(status: string): string {
@@ -125,5 +126,48 @@ export function buildBookingsExportFilterLabels(input: {
     ),
     status: formatBookingStatusFilterLabel(input.status ?? 'all'),
     search: input.search?.trim() ? input.search.trim() : '—',
+  }
+}
+
+export function formatGuestListReportTitle(
+  preset: BookingDatePreset,
+  customFrom?: string,
+  customTo?: string
+): string {
+  if (preset === 'all') return 'Guest List Report'
+
+  if (preset === 'custom') {
+    const range = formatBookingDateFilterLabel(preset, customFrom, customTo)
+    return `${range} Guest List Report`
+  }
+
+  const label = BOOKING_DATE_PRESET_OPTIONS.find((o) => o.value === preset)?.label ?? ''
+  return `${label} Guest List Report`
+}
+
+export type GuestsExportFilterLabels = {
+  date: string
+  search: string
+  reportTitle: string
+}
+
+export function buildGuestsExportFilterLabels(input: {
+  datePreset: BookingDatePreset
+  customDateFrom?: string
+  customDateTo?: string
+  search?: string
+}): GuestsExportFilterLabels {
+  return {
+    date: formatBookingDateFilterLabel(
+      input.datePreset,
+      input.customDateFrom,
+      input.customDateTo
+    ),
+    search: input.search?.trim() ? input.search.trim() : '—',
+    reportTitle: formatGuestListReportTitle(
+      input.datePreset,
+      input.customDateFrom,
+      input.customDateTo
+    ),
   }
 }

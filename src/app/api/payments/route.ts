@@ -3,7 +3,14 @@ import { db } from '@/lib/db';
 import { requireAuth, canAccessHotel, canAccessRestaurant } from '@/lib/auth';
 import { successResponse, errorResponse, paginatedResponse, logActivity } from '@/lib/api-utils';
 import { bookingVatOptions, computeRoomBookingTotals, sumBookingNetPaid } from '@/lib/booking-totals';
-import { PaymentType, PaymentMethod } from '@prisma/client';
+import { PaymentType, PaymentMethod, Prisma } from '@prisma/client';
+import {
+  parsePaymentMethod,
+  paymentRequiresLastFour,
+  paymentRequiresReference,
+  isValidPaymentAccountLastFour,
+} from '@/lib/payment-method';
+import { resolveRestaurantSettlementSource } from '@/lib/restaurant-order-settle';
 
 // GET /api/payments - List payments with filters
 export async function GET(request: NextRequest) {
@@ -20,21 +27,26 @@ export async function GET(request: NextRequest) {
     const orderId = searchParams.get('orderId');
     const paymentType = searchParams.get('paymentType') as PaymentType | null;
     const method = searchParams.get('method') as PaymentMethod | null;
-    const startDate = searchParams.get('startDate');
-    const endDate = searchParams.get('endDate');
+    const startDate = searchParams.get('startDate') || searchParams.get('dateFrom');
+    const endDate = searchParams.get('endDate') || searchParams.get('dateTo');
 
     const skip = (page - 1) * limit;
 
     // Build where clause with role-based filtering
-    const where: Record<string, unknown> = {};
+    const where: Prisma.PaymentWhereInput = {};
 
     // Role-based access control
     if (user.role === 'HOTEL_STAFF') {
-      // Hotel staff can only see hotel-related payments
+      // Hotel staff: hotel booking payments only (not restaurant counter / dues)
       where.bookingId = { not: null };
+      where.orderId = null;
     } else if (user.role === 'RESTAURANT_STAFF') {
-      // Restaurant staff can only see restaurant payments
+      // Restaurant staff: own receipts + hotel due settlements on restaurant orders
       where.orderId = { not: null };
+      where.OR = [
+        { receivedBy: user.id },
+        { settlementSource: 'HOTEL_DUE' },
+      ];
     }
     // ADMIN can see all
 
@@ -52,15 +64,29 @@ export async function GET(request: NextRequest) {
       where.method = method;
     }
 
-    // Date range filter
+    // Date range filter (inclusive days)
     if (startDate || endDate) {
       const createdAt: Record<string, unknown> = {};
-      if (startDate) createdAt.gte = new Date(startDate);
-      if (endDate) createdAt.lte = new Date(endDate);
-      where.createdAt = createdAt;
+      if (startDate) {
+        const start = new Date(startDate);
+        if (!Number.isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          createdAt.gte = start;
+        }
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          createdAt.lte = end;
+        }
+      }
+      if (createdAt.gte || createdAt.lte) {
+        where.createdAt = createdAt;
+      }
     }
 
-    const [payments, total] = await Promise.all([
+    const [payments, total, sumResult] = await Promise.all([
       db.payment.findMany({
         where,
         include: {
@@ -79,7 +105,7 @@ export async function GET(request: NextRequest) {
             },
           },
           receiver: {
-            select: { id: true, name: true },
+            select: { id: true, name: true, role: true },
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -87,9 +113,12 @@ export async function GET(request: NextRequest) {
         take: limit,
       }),
       db.payment.count({ where }),
+      db.payment.aggregate({ where, _sum: { amount: true } }),
     ]);
 
-    return paginatedResponse(payments, total, page, limit);
+    return paginatedResponse(payments, total, page, limit, {
+      sumAmount: sumResult._sum.amount ?? 0,
+    });
   } catch (error) {
     console.error('Error listing payments:', error);
     return errorResponse('Failed to fetch payments', 500);
@@ -104,7 +133,17 @@ export async function POST(request: NextRequest) {
 
     const user = authResult;
     const body = await request.json();
-    const { amount, method, paymentType, bookingId, orderId, invoiceId, reference, notes } = body;
+    const {
+      amount,
+      method,
+      paymentType,
+      bookingId,
+      orderId,
+      invoiceId,
+      reference,
+      accountLastFour,
+      notes,
+    } = body;
 
     // Validate amount
     if (!amount || amount <= 0) {
@@ -117,6 +156,11 @@ export async function POST(request: NextRequest) {
 
     if (!method) {
       return errorResponse('Payment method is required');
+    }
+
+    const resolvedMethod = parsePaymentMethod(method);
+    if (resolvedMethod === 'NONE') {
+      return errorResponse('Invalid payment method');
     }
 
     // Role-based validation
@@ -152,17 +196,31 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create payment
+    const trimmedReference = reference ? String(reference).trim() : '';
+    const trimmedLastFour = accountLastFour ? String(accountLastFour).trim() : '';
+
+    if (paymentRequiresReference(resolvedMethod) && !trimmedReference) {
+      return errorResponse('Payment reference is required for this payment method');
+    }
+    if (
+      paymentRequiresLastFour(resolvedMethod) &&
+      (!trimmedLastFour || !isValidPaymentAccountLastFour(trimmedLastFour))
+    ) {
+      return errorResponse('Last 4 digits are required for card / bKash / Nagad / Upay payments');
+    }
+
     const payment = await db.payment.create({
       data: {
         amount,
-        method,
+        method: resolvedMethod,
         paymentType,
         bookingId: bookingId || null,
         orderId: orderId || null,
         invoiceId: invoiceId || null,
-        reference: reference || null,
+        reference: paymentRequiresReference(resolvedMethod) ? trimmedReference : null,
+        accountLastFour: paymentRequiresLastFour(resolvedMethod) ? trimmedLastFour : null,
         notes: notes || null,
+        settlementSource: orderId ? resolveRestaurantSettlementSource(user.role) : null,
         receivedBy: user.id,
       },
       include: {

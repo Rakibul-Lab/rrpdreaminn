@@ -112,7 +112,9 @@ function buildExtraChargeLines(input: BuildInvoiceLineItemsInput): InvoiceLineIt
         charge.description ||
         (charge.chargeType === 'EARLY_CHECKOUT'
           ? 'Early checkout fee'
-          : charge.chargeType.replace(/_/g, ' ')),
+          : charge.chargeType === 'DAMAGE'
+            ? 'Damage charges'
+            : charge.chargeType.replace(/_/g, ' ')),
       quantity: charge.quantity,
       unitPrice: charge.amount,
       total: charge.amount * charge.quantity,
@@ -176,13 +178,20 @@ function buildRestaurantLines(orders: RestaurantOrderRow[]): InvoiceLineItemInpu
   return lines
 }
 
-/** Detailed line items for invoice print (room, extras, F&B, discount, VAT). */
-export function buildInvoiceLineItems(input: BuildInvoiceLineItemsInput): InvoiceLineItemInput[] {
-  const items: InvoiceLineItemInput[] = [
+/** Room, extras, and restaurant lines only (no discount / hotel VAT summary rows). */
+export function buildInvoiceChargeLinesOnly(
+  input: Omit<BuildInvoiceLineItemsInput, 'discount' | 'hotelVat' | 'restaurantVat'>
+): InvoiceLineItemInput[] {
+  return [
     ...buildRoomChargeLines(input),
     ...buildExtraChargeLines(input),
     ...buildRestaurantLines(input.restaurantOrders),
   ]
+}
+
+/** Detailed line items for invoice print (room, extras, F&B, discount, VAT). */
+export function buildInvoiceLineItems(input: BuildInvoiceLineItemsInput): InvoiceLineItemInput[] {
+  const items: InvoiceLineItemInput[] = buildInvoiceChargeLinesOnly(input)
 
   if (input.discount > 0) {
     items.push({

@@ -38,7 +38,19 @@ export const RESERVATION_TERMS_AND_CONDITIONS = RESERVATION_POLICIES.map(
 export const HOTEL_RESERVATION_FOOTER =
   `${HOTEL_NAME} — Thank you for choosing us. For inquiries please contact the front desk.`
 
-export const DEFAULT_MEAL_PLAN = 'Breakfast Only'
+export const INVOICE_GUEST_AGREEMENT =
+  'I agree that all charges listed on this invoice are correct and I accept the hotel terms and conditions stated above.'
+
+/** @deprecated Use formatReservationMealPlan(withMeal) for booking documents. */
+export const DEFAULT_MEAL_PLAN = 'Breakfast (complementary)'
+
+export const MEAL_PLAN_WITH_MEAL = 'Full Board (Breakfast complimentary)'
+export const MEAL_PLAN_WITHOUT_MEAL = 'Breakfast (complementary)'
+
+export function formatReservationMealPlan(withMeal?: boolean | null): string {
+  return withMeal === true ? MEAL_PLAN_WITH_MEAL : MEAL_PLAN_WITHOUT_MEAL
+}
+
 export const DEFAULT_SMOKING_STATUS = 'Non Smoking'
 
 /** Default company / source on new reservations (editable by staff). */

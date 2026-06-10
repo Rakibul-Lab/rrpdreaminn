@@ -24,6 +24,7 @@ export interface PosLiveSearchFieldProps<T> {
   /** Render dropdown as an overlay below the input (for compact headers). */
   overlayDropdown?: boolean
   inputClassName?: string
+  disabled?: boolean
 }
 
 export function PosLiveSearchField<T>({
@@ -44,6 +45,7 @@ export function PosLiveSearchField<T>({
   maxResults = 15,
   overlayDropdown = false,
   inputClassName,
+  disabled = false,
 }: PosLiveSearchFieldProps<T>) {
   const listboxId = useId()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -208,12 +210,14 @@ export function PosLiveSearchField<T>({
             setSearchQuery(e.target.value)
             setOpen(true)
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={() => {
+            if (!disabled) setOpen(true)
+          }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className={cn('h-9 pl-8 pr-8 text-sm', inputClassName)}
           autoComplete="off"
-          disabled={isLoading}
+          disabled={disabled || isLoading}
         />
         {isLoading && (
           <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-amber-600" />

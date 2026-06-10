@@ -20,9 +20,9 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { Plus, Search, LogIn, LogOut, XCircle, Receipt, FileText, CalendarRange, FileSpreadsheet, FileDown, Loader2 } from 'lucide-react';
+import { Plus, Search, LogIn, LogOut, XCircle, Receipt, FileText, FilePenLine, CalendarRange, FileSpreadsheet, FileDown, Loader2 } from 'lucide-react';
 import { AdjustStayDialog } from './AdjustStayDialog';
-import { openNewReservationTab } from '@/lib/reservation-navigation';
+import { openNewReservationTab, openRegistrationFormTab } from '@/lib/reservation-navigation';
 import { openCheckoutTab } from '@/lib/checkout-navigation';
 import { formatBdt } from '@/lib/currency';
 import { getPaginationPages } from '@/lib/pagination-pages';
@@ -32,7 +32,12 @@ import { computeRefundFromInput } from '@/lib/booking-totals';
 import { Switch } from '@/components/ui/switch';
 import { useHotelTimes } from '@/hooks/use-hotel-times';
 import { useAuthStore } from '@/lib/auth-store';
-import { formatListBookingCheckIn, formatListBookingCheckOut } from '@/lib/hotel-times';
+import {
+  formatListBookingCheckIn,
+  formatListBookingCheckOut,
+  getListBookingCheckInParts,
+  getListBookingCheckOutParts,
+} from '@/lib/hotel-times';
 import {
   BOOKING_DATE_PRESET_OPTIONS,
   buildBookingsExportFilterLabels,
@@ -44,6 +49,7 @@ import {
   downloadBookingsExcel,
   downloadBookingsPdf,
 } from '@/lib/bookings-export';
+import { getBookingSourceLabel, isWalkInBooking } from '@/lib/booking-company';
 
 interface Booking {
   id: string;
@@ -51,6 +57,7 @@ interface Booking {
   customerId: string;
   roomId: string;
   status: 'RESERVED' | 'CHECKED_IN' | 'CHECKED_OUT' | 'CANCELLED';
+  isInitialReservation?: boolean;
   checkIn: string;
   checkOut: string;
   actualCheckIn?: string | null;
@@ -66,6 +73,9 @@ interface Booking {
   totalWithVat?: number;
   notes?: string | null;
   createdAt?: string;
+  company?: string | null;
+  companyLedgerId?: string | null;
+  companyLedger?: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string; email?: string };
   room: { id: string; roomNumber: string; type: { name: string; basePrice: number } };
   creator?: { id: string; name: string; email: string } | null;
@@ -82,6 +92,15 @@ interface CancelPreview {
   maxRefundable: number;
   totalWithVat: number;
   dueAmount: number;
+}
+
+function BookingDatetimeCell({ date, time }: { date: string; time: string }) {
+  return (
+    <>
+      <p className="bl-truncate font-medium">{date}</p>
+      <p className="bl-truncate bl-secondary text-muted-foreground">{time}</p>
+    </>
+  );
 }
 
 export function BookingsPage() {
@@ -354,6 +373,10 @@ export function BookingsPage() {
             )}
             Export PDF
           </Button>
+          <Button variant="outline" onClick={openRegistrationFormTab}>
+            <FileText className="w-4 h-4 mr-2" />
+            Registration Form
+          </Button>
           <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={openNewReservationTab}>
             <Plus className="w-4 h-4 mr-2" />
             New Reservation
@@ -382,6 +405,7 @@ export function BookingsPage() {
             <SelectItem value="CHECKED_IN">Checked In</SelectItem>
             <SelectItem value="CHECKED_OUT">Checked Out</SelectItem>
             <SelectItem value="CANCELLED">Cancelled</SelectItem>
+            <SelectItem value="COMPANY">Company</SelectItem>
           </SelectContent>
         </Select>
         <Select
@@ -458,7 +482,8 @@ export function BookingsPage() {
                   <th className="col-room text-left font-medium">Room</th>
                   <th className="col-checkin text-left font-medium">Check-in</th>
                   <th className="col-checkout text-left font-medium">Check-out</th>
-                  <th className="col-status text-left font-medium">Status</th>
+                  <th className="col-booking text-left font-medium">Booking</th>
+                  <th className="col-company text-left font-medium">Company</th>
                   <th className="col-reserved text-left font-medium">Reserved by</th>
                   <th className="col-vat text-right font-medium" title="VAT amount and rate">VAT</th>
                   <th className="col-total text-right font-medium" title="Total including VAT">Total</th>
@@ -486,13 +511,28 @@ export function BookingsPage() {
                     </p>
                   </td>
                   <td className="col-checkin" title={formatListBookingCheckIn(booking, times)}>
-                    {formatListBookingCheckIn(booking, times, true)}
+                    <BookingDatetimeCell {...getListBookingCheckInParts(booking, times, true)} />
                   </td>
                   <td className="col-checkout" title={formatListBookingCheckOut(booking, times)}>
-                    {formatListBookingCheckOut(booking, times, true)}
+                    <BookingDatetimeCell {...getListBookingCheckOutParts(booking, times, true)} />
                   </td>
-                  <td className="col-status">
-                    <StatusBadge status={booking.status} className="text-xs px-2 py-0.5 h-6 font-normal" />
+                  <td className="col-booking">
+                    <StatusBadge
+                      status={
+                        booking.isInitialReservation && booking.status === 'RESERVED'
+                          ? 'RESERVED_ND'
+                          : booking.status
+                      }
+                      className="text-xs px-2 py-0.5 h-6 font-normal"
+                    />
+                  </td>
+                  <td className="col-company">
+                    <StatusBadge
+                      status={isWalkInBooking(booking) ? 'WALK_IN' : 'COMPANY'}
+                      label={getBookingSourceLabel(booking)}
+                      title={getBookingSourceLabel(booking)}
+                      className="bl-source-badge text-xs px-2 py-0.5 h-6 font-normal"
+                    />
                   </td>
                   <td className="col-reserved">
                     <p className="bl-truncate font-medium" title={booking.creator?.name || undefined}>
@@ -519,22 +559,52 @@ export function BookingsPage() {
                   </td>
                   <td className="col-actions">
                     <div className="bl-actions">
-                      {booking.status === 'RESERVED' && (
+                      {booking.status === 'RESERVED' && booking.isInitialReservation && (
                         <Button
                           variant="outline"
                           size="icon"
-                          className="h-7 w-7 shrink-0 border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-                          title="Check-in"
-                          onClick={() => {
-                            setCheckInBookingId(booking.id);
-                            setCheckInPayment('0');
-                            setCheckInPaymentMethod('CASH');
-                            setCheckInDialogOpen(true);
-                          }}
-                          disabled={checkInMutation.isPending}
+                          className="h-7 w-7 shrink-0 border-amber-500 text-amber-800 hover:bg-amber-50"
+                          title="Edit initial reservation"
+                          onClick={() =>
+                            window.open(
+                              `/reservations/${booking.id}/edit`,
+                              '_blank',
+                              'noopener,noreferrer'
+                            )
+                          }
                         >
-                          <LogIn className="w-3 h-3" />
+                          <FilePenLine className="w-3 h-3" />
                         </Button>
+                      )}
+                      {booking.status === 'RESERVED' && (
+                        <span
+                          className="inline-flex"
+                          title={
+                            booking.isInitialReservation
+                              ? 'Complete the initial reservation (NID and ID images) using Edit before check-in'
+                              : 'Check-in'
+                          }
+                        >
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className={`h-7 w-7 shrink-0 ${
+                              booking.isInitialReservation
+                                ? 'border-muted-foreground/30 text-muted-foreground'
+                                : 'border-emerald-600 text-emerald-700 hover:bg-emerald-50'
+                            }`}
+                            onClick={() => {
+                              if (booking.isInitialReservation) return;
+                              setCheckInBookingId(booking.id);
+                              setCheckInPayment('0');
+                              setCheckInPaymentMethod('CASH');
+                              setCheckInDialogOpen(true);
+                            }}
+                            disabled={checkInMutation.isPending || booking.isInitialReservation}
+                          >
+                            <LogIn className="w-3 h-3" />
+                          </Button>
+                        </span>
                       )}
                       {booking.status === 'CHECKED_IN' && (
                         <>
@@ -600,7 +670,7 @@ export function BookingsPage() {
               ))}
               {bookings.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="p-8 text-center text-muted-foreground">No reservations found</td>
+                  <td colSpan={11} className="p-8 text-center text-muted-foreground">No reservations found</td>
                 </tr>
               )}
               </tbody>

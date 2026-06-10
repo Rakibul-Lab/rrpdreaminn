@@ -20,6 +20,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
+import { EmailInput } from '@/components/ui/email-input'
 import { Label } from '@/components/ui/label'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
@@ -65,6 +66,8 @@ export default function UsersPage() {
   })
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const [avatarInputKey, setAvatarInputKey] = useState(0)
+  const [emailBlocking, setEmailBlocking] = useState(false)
+  const [emailVerificationToken, setEmailVerificationToken] = useState<string | null>(null)
 
   const { data: usersData, isLoading } = useQuery({
     queryKey: ['users'],
@@ -77,7 +80,10 @@ export default function UsersPage() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      return api.post('/users', form)
+      return api.post('/users', {
+        ...form,
+        emailVerificationToken: emailVerificationToken || undefined,
+      })
     },
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
@@ -176,6 +182,10 @@ export default function UsersPage() {
   }
 
   const handleSubmit = () => {
+    if (emailBlocking) {
+      toast({ title: 'Invalid email', description: 'Enter a valid email address', variant: 'destructive' })
+      return
+    }
     if (editingUser) {
       const data: Record<string, unknown> = {
         id: editingUser.id,
@@ -186,6 +196,7 @@ export default function UsersPage() {
         avatar: form.avatar,
       }
       if (form.password) data.password = form.password
+      if (emailVerificationToken) data.emailVerificationToken = emailVerificationToken
       updateMutation.mutate(data)
     } else {
       createMutation.mutate()
@@ -321,10 +332,10 @@ export default function UsersPage() {
           <DialogHeader>
             <DialogTitle>{editingUser ? 'Edit User' : 'Add New User'}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <div>
+          <div className="space-y-5">
+            <div className="space-y-2">
               <Label>Profile Image</Label>
-              <div className="mt-2 flex items-center gap-3">
+              <div className="flex items-center gap-3">
                 <div className="h-14 w-14 rounded-full border bg-muted overflow-hidden flex items-center justify-center text-sm font-semibold text-muted-foreground">
                   {form.avatar ? (
                     <Image src={form.avatar} alt="Avatar preview" width={56} height={56} className="h-full w-full object-cover" unoptimized />
@@ -357,7 +368,7 @@ export default function UsersPage() {
                 </div>
               </div>
             </div>
-            <div>
+            <div className="space-y-2">
               <Label>Name</Label>
               <Input
                 placeholder="Full name"
@@ -365,16 +376,19 @@ export default function UsersPage() {
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               />
             </div>
-            <div>
+            <div className="space-y-2">
               <Label>Email</Label>
-              <Input
-                type="email"
+              <EmailInput
                 placeholder="Email address"
                 value={form.email}
-                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                onChange={(email) => setForm((f) => ({ ...f, email }))}
+                onValidationChange={(result) => {
+                  setEmailBlocking(result.isBlocking)
+                  setEmailVerificationToken(result.verificationToken ?? null)
+                }}
               />
             </div>
-            <div>
+            <div className="space-y-2">
               <Label>{editingUser ? 'New Password (leave blank to keep current)' : 'Password'}</Label>
               <Input
                 type="password"
@@ -383,7 +397,7 @@ export default function UsersPage() {
                 onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
               />
             </div>
-            <div>
+            <div className="space-y-2">
               <Label>Role</Label>
               <Select value={form.role} onValueChange={(v) => setForm((f) => ({ ...f, role: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
@@ -394,7 +408,7 @@ export default function UsersPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
+            <div className="space-y-2">
               <Label>Phone (optional)</Label>
               <Input
                 placeholder="Phone number"
@@ -403,11 +417,11 @@ export default function UsersPage() {
               />
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-3">
             <Button variant="outline" onClick={closeDialog}>Cancel</Button>
             <Button
               className="bg-amber-600 hover:bg-amber-700 text-white"
-              disabled={!form.name || !form.email || (!editingUser && !form.password) || createMutation.isPending || updateMutation.isPending}
+              disabled={!form.name || !form.email || emailBlocking || (!editingUser && !form.password) || createMutation.isPending || updateMutation.isPending}
               onClick={handleSubmit}
             >
               {createMutation.isPending || updateMutation.isPending ? 'Saving...' : editingUser ? 'Update User' : 'Create User'}

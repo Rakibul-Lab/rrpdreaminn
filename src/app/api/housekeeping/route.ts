@@ -4,6 +4,25 @@ import { requireRole } from '@/lib/auth';
 import { successResponse, paginatedResponse, errorResponse, notFoundResponse, logActivity } from '@/lib/api-utils';
 import { RoleType } from '@prisma/client';
 
+const taskInclude = {
+  room: true,
+  cleaningStaff: {
+    select: { id: true, staffCode: true, name: true, phone: true },
+  },
+  assigned: { select: { id: true, name: true, email: true, role: true } },
+} as const;
+
+async function resolveCleaningStaffId(cleaningStaffId: string) {
+  const staff = await db.cleaningStaff.findFirst({
+    where: { id: cleaningStaffId, active: true },
+    select: { id: true },
+  });
+  if (!staff) {
+    return null;
+  }
+  return staff.id;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -11,7 +30,7 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '20');
     const status = searchParams.get('status');
     const roomId = searchParams.get('roomId');
-    const assignedTo = searchParams.get('assignedTo');
+    const cleaningStaffId = searchParams.get('cleaningStaffId');
     const taskType = searchParams.get('taskType');
 
     const skip = (page - 1) * limit;
@@ -19,16 +38,13 @@ export async function GET(request: NextRequest) {
     const where: Record<string, unknown> = {};
     if (status) where.status = status;
     if (roomId) where.roomId = roomId;
-    if (assignedTo) where.assignedTo = assignedTo;
+    if (cleaningStaffId) where.cleaningStaffId = cleaningStaffId;
     if (taskType) where.taskType = taskType;
 
     const [tasks, total] = await Promise.all([
       db.housekeepingTask.findMany({
         where,
-        include: {
-          room: true,
-          assigned: { select: { id: true, name: true, email: true, role: true } },
-        },
+        include: taskInclude,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -49,42 +65,40 @@ export async function POST(request: NextRequest) {
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
-    const { roomId, taskType, assignedTo, notes } = body;
+    const { roomId, taskType, cleaningStaffId, notes } = body;
 
-    if (!roomId || !taskType || !assignedTo) {
-      return errorResponse('Room ID, task type, and assigned user are required');
+    if (!roomId || !taskType) {
+      return errorResponse('Room ID and task type are required');
     }
 
-    // Verify room exists
     const room = await db.room.findUnique({ where: { id: roomId } });
     if (!room) {
       return notFoundResponse('Room');
     }
 
-    // Verify assigned user exists
-    const user = await db.user.findUnique({ where: { id: assignedTo } });
-    if (!user) {
-      return errorResponse('Assigned user not found');
+    let resolvedStaffId: string | null = null;
+    if (cleaningStaffId) {
+      resolvedStaffId = await resolveCleaningStaffId(String(cleaningStaffId));
+      if (!resolvedStaffId) {
+        return errorResponse('Cleaning staff not found');
+      }
     }
 
     const task = await db.housekeepingTask.create({
       data: {
         roomId,
         taskType,
-        assignedTo,
+        cleaningStaffId: resolvedStaffId,
         notes,
       },
-      include: {
-        room: true,
-        assigned: { select: { id: true, name: true, email: true, role: true } },
-      },
+      include: taskInclude,
     });
 
     await logActivity(
       authResult.id,
       'CREATE_HOUSEKEEPING_TASK',
       'hotel',
-      JSON.stringify({ taskId: task.id, roomId, taskType, assignedTo })
+      JSON.stringify({ taskId: task.id, roomId, taskType, cleaningStaffId: resolvedStaffId })
     );
 
     return successResponse(task, 'Housekeeping task created successfully', 201);
@@ -100,7 +114,7 @@ export async function PUT(request: NextRequest) {
     if (authResult instanceof Response) return authResult;
 
     const body = await request.json();
-    const { id, status, notes, assignedTo } = body;
+    const { id, status, notes, cleaningStaffId } = body;
 
     if (!id) {
       return errorResponse('Task ID is required');
@@ -118,19 +132,28 @@ export async function PUT(request: NextRequest) {
     const updateData: Record<string, unknown> = {};
     if (status !== undefined) updateData.status = status;
     if (notes !== undefined) updateData.notes = notes;
-    if (assignedTo !== undefined) {
-      const assignedUser = await db.user.findUnique({
-        where: { id: assignedTo },
-        select: { id: true, active: true },
-      });
-      if (!assignedUser || !assignedUser.active) {
-        return errorResponse('Assigned user not found');
+
+    if (cleaningStaffId !== undefined) {
+      if (cleaningStaffId) {
+        const resolvedStaffId = await resolveCleaningStaffId(String(cleaningStaffId));
+        if (!resolvedStaffId) {
+          return errorResponse('Cleaning staff not found');
+        }
+        updateData.cleaningStaffId = resolvedStaffId;
+      } else {
+        updateData.cleaningStaffId = null;
       }
-      updateData.assignedTo = assignedUser.id;
     }
 
-    // Handle status transitions
     if (status === 'IN_PROGRESS') {
+      const staffId =
+        (updateData.cleaningStaffId as string | null | undefined) ?? existing.cleaningStaffId;
+      if (!staffId) {
+        return errorResponse('Please assign cleaning staff before starting');
+      }
+      if (updateData.cleaningStaffId === undefined) {
+        updateData.cleaningStaffId = staffId;
+      }
       updateData.startedAt = new Date();
       await db.room.update({
         where: { id: existing.roomId },
@@ -141,8 +164,6 @@ export async function PUT(request: NextRequest) {
     if (status === 'COMPLETED') {
       updateData.completedAt = new Date();
 
-      // When task is completed, set room status to AVAILABLE
-      // Only if room is in CLEANING status
       if (existing.room.status === 'CLEANING') {
         await db.room.update({
           where: { id: existing.roomId },
@@ -154,10 +175,7 @@ export async function PUT(request: NextRequest) {
     const task = await db.housekeepingTask.update({
       where: { id },
       data: updateData,
-      include: {
-        room: true,
-        assigned: { select: { id: true, name: true, email: true, role: true } },
-      },
+      include: taskInclude,
     });
 
     await logActivity(

@@ -13,6 +13,7 @@ import { RoomsPage } from '../hotel/RoomsPage';
 import { RoomTypesPage } from '../hotel/RoomTypesPage';
 import { BookingsPage } from '../hotel/BookingsPage';
 import { CustomersPage } from '../hotel/CustomersPage';
+import { CompanyLedgerPage } from '../hotel/CompanyLedgerPage';
 import { HousekeepingPage } from '../hotel/HousekeepingPage';
 import { PlaceholderPage } from '../shared/PlaceholderPage';
 
@@ -22,6 +23,7 @@ const viewComponents: Record<ViewId, React.ComponentType> = {
   'room-types': RoomTypesPage,
   bookings: BookingsPage,
   customers: CustomersPage,
+  'company-ledger': CompanyLedgerPage,
   housekeeping: HousekeepingPage,
   // Placeholder pages for views not yet built
   'restaurant-pos': PlaceholderPage,

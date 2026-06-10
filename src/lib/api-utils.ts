@@ -25,7 +25,8 @@ export function paginatedResponse<T>(
   data: T[],
   total: number,
   page: number,
-  limit: number
+  limit: number,
+  extraMeta?: Record<string, unknown>
 ): NextResponse {
   return NextResponse.json({
     success: true,
@@ -35,6 +36,7 @@ export function paginatedResponse<T>(
       page,
       limit,
       totalPages: Math.ceil(total / limit),
+      ...extraMeta,
     },
   } as ApiResponse<T>);
 }
@@ -68,18 +70,21 @@ export async function logActivity(
   }
 }
 
-// Generate order number
+/** @deprecated Use generateRestaurantOrderNumber from @/lib/restaurant-order-number */
 export function generateOrderNumber(): string {
-  const prefix = 'CV'; // CloudView
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `${prefix}-${timestamp}-${random}`;
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const random = String(Math.floor(1000 + Math.random() * 9000));
+  return `RRP-CVR-${y}${m}${d}-${random}`;
 }
 
-// Generate invoice number
-export function generateInvoiceNumber(): string {
-  const prefix = 'INV';
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `${prefix}-${date}-${random}`;
+// Generate invoice number: RRP-DI-yyyyddMM + random 3 digits (year-date-month)
+export function generateInvoiceNumber(now: Date = new Date()): string {
+  const year = String(now.getFullYear());
+  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const random = String(Math.floor(100 + Math.random() * 900));
+  return `RRP-DI-${year}${day}${month}-${random}`;
 }

@@ -20,6 +20,7 @@ import {
   ChefHat,
   Receipt,
   CreditCard,
+  Landmark,
   BarChart3,
   SprayCan,
   Package,
@@ -37,6 +38,7 @@ export type ViewId =
   | 'room-types'
   | 'bookings'
   | 'customers'
+  | 'company-ledger'
   | 'restaurant-pos'
   | 'menu'
   | 'tables'
@@ -44,6 +46,7 @@ export type ViewId =
   | 'kitchen'
   | 'invoices'
   | 'payments'
+  | 'deposits'
   | 'reports'
   | 'housekeeping'
   | 'inventory'
@@ -63,6 +66,7 @@ const allNavItems: NavItem[] = [
   { id: 'room-types', label: 'Room Types', icon: Layers, section: 'hotel' },
   { id: 'bookings', label: 'Bookings', icon: CalendarCheck, section: 'hotel' },
   { id: 'customers', label: 'Customers', icon: Users, section: 'hotel' },
+  { id: 'company-ledger', label: 'Company Ledger', icon: Building2, section: 'hotel' },
   { id: 'restaurant-pos', label: 'Restaurant POS', icon: ShoppingCart, section: 'restaurant' },
   { id: 'menu', label: 'Menu', icon: UtensilsCrossed, section: 'restaurant' },
   { id: 'tables', label: 'Tables', icon: Grid3X3, section: 'restaurant' },
@@ -70,6 +74,7 @@ const allNavItems: NavItem[] = [
   { id: 'kitchen', label: 'Kitchen', icon: ChefHat, section: 'restaurant' },
   { id: 'invoices', label: 'Invoices', icon: Receipt, section: 'hotel' },
   { id: 'payments', label: 'Payments', icon: CreditCard, section: 'admin' },
+  { id: 'deposits', label: 'Deposits', icon: Landmark, section: 'hotel' },
   { id: 'reports', label: 'Reports', icon: BarChart3, section: 'admin' },
   { id: 'housekeeping', label: 'Housekeeping', icon: SprayCan, section: 'hotel' },
   { id: 'inventory', label: 'Inventory', icon: Package, section: 'admin' },
@@ -79,13 +84,13 @@ const allNavItems: NavItem[] = [
 
 const roleNavItems: Record<string, ViewId[]> = {
   ADMIN: [
-    'dashboard', 'rooms', 'room-types', 'bookings', 'customers',
+    'dashboard', 'rooms', 'room-types', 'bookings', 'customers', 'company-ledger',
     'restaurant-pos', 'menu', 'tables', 'orders', 'kitchen',
-    'invoices', 'payments', 'reports', 'housekeeping', 'inventory', 'settings', 'activity-logs',
+    'invoices', 'payments', 'deposits', 'reports', 'housekeeping', 'inventory', 'settings', 'activity-logs',
   ],
   HOTEL_STAFF: [
-    'dashboard', 'rooms', 'room-types', 'bookings', 'customers',
-    'kitchen', 'invoices', 'payments', 'reports', 'housekeeping',
+    'dashboard', 'rooms', 'room-types', 'bookings', 'customers', 'company-ledger',
+    'kitchen', 'invoices', 'payments', 'deposits', 'reports', 'housekeeping',
   ],
   RESTAURANT_STAFF: [
     'restaurant-pos', 'menu', 'orders', 'kitchen', 'tables',

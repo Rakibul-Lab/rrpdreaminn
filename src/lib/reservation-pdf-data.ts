@@ -5,6 +5,8 @@ export interface ReservationPdfData {
   guestPhone: string
   guestEmail?: string | null
   guestAddress?: string | null
+  guestNationality?: string | null
+  guestRegistrationNumber?: string | null
   idType?: string | null
   idNumber?: string | null
   roomNumber: string
@@ -24,4 +26,6 @@ export interface ReservationPdfData {
   createdAt: string
   status?: string
   formOfPayment?: string
+  withMeal?: boolean
+  mealPlan?: string
 }

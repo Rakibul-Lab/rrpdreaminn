@@ -5,6 +5,7 @@ import { successResponse, errorResponse, notFoundResponse, logActivity } from '@
 import { findCustomerByPhone } from '@/lib/customer-phone';
 import { isValidPhone, normalizePhone, phonesMatch } from '@/lib/phone';
 import { RoleType } from '@prisma/client';
+import { getEmailValidationError } from '@/lib/email-verify-server';
 
 export async function GET(
   request: NextRequest,
@@ -52,6 +53,15 @@ export async function PUT(
       return notFoundResponse('Customer');
     }
 
+    if (body.email !== undefined) {
+      const emailError = await getEmailValidationError(
+        body.email,
+        true,
+        body.emailVerificationToken
+      );
+      if (emailError) return errorResponse(emailError);
+    }
+
     if (body.phone !== undefined) {
       if (!isValidPhone(body.phone)) {
         return errorResponse('Please enter a valid phone number (at least 10 digits)');
@@ -72,6 +82,10 @@ export async function PUT(
     if (body.address !== undefined) updateData.address = body.address;
     if (body.idType !== undefined) updateData.idType = body.idType;
     if (body.idNumber !== undefined) updateData.idNumber = body.idNumber;
+    if (body.registrationNumber !== undefined) {
+      updateData.registrationNumber = body.registrationNumber?.trim() || null;
+    }
+    if (body.nationality !== undefined) updateData.nationality = body.nationality?.trim() || null;
     if (body.dateOfBirth !== undefined) updateData.dateOfBirth = body.dateOfBirth;
     if (body.idDocPath !== undefined) updateData.idDocPath = body.idDocPath;
     if (body.notes !== undefined) updateData.notes = body.notes;

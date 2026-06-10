@@ -11,9 +11,12 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 
   // Booking statuses
   RESERVED: { label: 'Reserved', variant: 'outline', className: 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-50' },
+  RESERVED_ND: { label: 'Reserved (N.D)', variant: 'outline', className: 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-50' },
   CHECKED_IN: { label: 'Checked In', variant: 'outline', className: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-50' },
   CHECKED_OUT: { label: 'Checked Out', variant: 'outline', className: 'bg-muted text-muted-foreground border-border hover:bg-muted' },
   CANCELLED: { label: 'Cancelled', variant: 'destructive', className: 'bg-red-50 text-red-700 border-red-200 hover:bg-red-50' },
+  COMPANY: { label: 'Company', variant: 'outline', className: 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-50' },
+  WALK_IN: { label: 'Walk-in', variant: 'outline', className: 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-50' },
 
   // Order statuses
   PENDING: { label: 'Pending', variant: 'outline', className: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-50' },
@@ -40,22 +43,26 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'second
 interface StatusBadgeProps {
   status: string;
   className?: string;
+  title?: string;
+  /** Override the default label (e.g. company name on COMPANY badge). */
+  label?: string;
 }
 
-export function StatusBadge({ status, className = '' }: StatusBadgeProps) {
+export function StatusBadge({ status, className = '', title, label }: StatusBadgeProps) {
   const config = statusConfig[status];
+  const displayLabel = label ?? config?.label ?? status;
 
   if (!config) {
     return (
-      <Badge variant="outline" className={className}>
-        {status}
+      <Badge variant="outline" className={className} title={title}>
+        {displayLabel}
       </Badge>
     );
   }
 
   return (
-    <Badge variant={config.variant} className={`${config.className} ${className}`}>
-      {config.label}
+    <Badge variant={config.variant} className={`${config.className} ${className}`} title={title}>
+      {displayLabel}
     </Badge>
   );
 }

@@ -2,6 +2,7 @@ export const PAYMENT_METHOD_OPTIONS = [
   { value: 'NONE', label: 'None' },
   { value: 'CASH', label: 'Cash' },
   { value: 'CARD', label: 'Card' },
+  { value: 'BANK', label: 'Bank' },
   { value: 'MOBILE_BANKING', label: 'Mobile Banking' },
   { value: 'BKASH', label: 'bKash' },
   { value: 'NAGAD', label: 'Nagad' },
@@ -58,3 +59,51 @@ export function formatFormOfPayment(
   if (advanceAmount <= 0 || isNonePaymentMethod(method)) return 'Not paid at booking'
   return formatPaymentMethod(method)
 }
+
+const LAST_FOUR_PAYMENT_METHODS = new Set<PaymentMethodValue>([
+  'CARD',
+  'BKASH',
+  'NAGAD',
+  'UPAY',
+])
+
+export function paymentRequiresReference(method: string): boolean {
+  return method !== 'CASH' && method !== 'NONE'
+}
+
+export function paymentRequiresLastFour(method: string): boolean {
+  return LAST_FOUR_PAYMENT_METHODS.has(method as PaymentMethodValue)
+}
+
+export function isValidPaymentAccountLastFour(value: string): boolean {
+  return /^\d{4}$/.test(value.trim())
+}
+
+export function formatPaymentAccountDetail(
+  method: string,
+  accountLastFour?: string | null
+): string | null {
+  if (paymentRequiresLastFour(method) && accountLastFour) {
+    return `****${accountLastFour}`
+  }
+  return null
+}
+
+export function formatPaymentReferenceDisplay(
+  method: string,
+  reference?: string | null
+): string {
+  if (method === 'CASH') return 'N/A'
+  return reference?.trim() || '—'
+}
+
+export function formatPaymentLastFourDisplay(
+  method: string,
+  accountLastFour?: string | null
+): string {
+  if (method === 'CASH') return 'N/A'
+  return formatPaymentAccountDetail(method, accountLastFour) || '—'
+}
+
+/** @deprecated Use formatPaymentAccountDetail */
+export const formatPaymentMethodDetail = formatPaymentAccountDetail

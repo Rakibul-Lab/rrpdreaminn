@@ -17,6 +17,8 @@ export interface GuestSearchResult {
   address?: string | null
   idType?: string | null
   idNumber?: string | null
+  registrationNumber?: string | null
+  nationality?: string | null
 }
 
 interface GuestSearchFieldProps {

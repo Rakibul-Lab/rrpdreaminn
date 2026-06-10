@@ -19,23 +19,37 @@ import { StatusBadge } from '../shared/StatusBadge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import { Plus, Play, CheckCircle2, Clock, SprayCan } from 'lucide-react';
+import { Plus, Play, CheckCircle2, Clock, SprayCan, UserPlus, Users } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { CleaningStaffListPanel } from './CleaningStaffListPanel';
 import { getPaginationPages } from '@/lib/pagination-pages';
 import { cn } from '@/lib/utils';
+import {
+  CleaningStaffSearchField,
+  formatCleaningStaffLabel,
+  type CleaningStaffResult,
+} from './CleaningStaffSearchField';
 
 interface HousekeepingTask {
   id: string;
   roomId: string;
   taskType: string;
   status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
-  assignedTo: string;
+  assignedTo: string | null;
+  cleaningStaffId: string | null;
   notes?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
   createdAt: string;
   room: { id: string; roomNumber: string; floor: number; status: string };
-  assigned: { id: string; name: string; email: string; role: string };
+  cleaningStaff: {
+    id: string;
+    staffCode: string;
+    name: string;
+    phone?: string | null;
+  } | null;
+  assigned: { id: string; name: string; email: string; role: string } | null;
 }
 
 interface Room {
@@ -45,22 +59,42 @@ interface Room {
   status: string;
 }
 
+function taskAssigneeName(task: HousekeepingTask): string {
+  if (task.cleaningStaff) return task.cleaningStaff.name;
+  if (task.assigned) return task.assigned.name;
+  return 'Unassigned';
+}
+
+function taskAssigneeId(task: HousekeepingTask): string | null {
+  if (task.cleaningStaff) return task.cleaningStaff.staffCode;
+  if (task.assigned) return task.assigned.id;
+  return null;
+}
+
 export function HousekeepingPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [staffDialogOpen, setStaffDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('tasks');
   const [startDialogOpen, setStartDialogOpen] = useState(false);
   const [startTask, setStartTask] = useState<HousekeepingTask | null>(null);
-  const [startAssignedTo, setStartAssignedTo] = useState('');
-  const [startNotes, setStartNotes] = useState('');
 
-  // Form state
   const [formRoomId, setFormRoomId] = useState('');
   const [formTaskType, setFormTaskType] = useState('cleaning');
-  const [formAssignedTo, setFormAssignedTo] = useState('');
+  const [formCleaningStaffId, setFormCleaningStaffId] = useState('');
+  const [formCleaningStaffLabel, setFormCleaningStaffLabel] = useState('');
   const [formNotes, setFormNotes] = useState('');
+
+  const [startCleaningStaffId, setStartCleaningStaffId] = useState('');
+  const [startCleaningStaffLabel, setStartCleaningStaffLabel] = useState('');
+  const [startNotes, setStartNotes] = useState('');
+
+  const [staffCode, setStaffCode] = useState('');
+  const [staffName, setStaffName] = useState('');
+  const [staffPhone, setStaffPhone] = useState('');
 
   const buildQuery = (status?: string, p = page, limit = pageSize) => {
     const params: string[] = [`page=${p}`, `limit=${limit}`];
@@ -105,33 +139,31 @@ export function HousekeepingPage() {
   const pageNumbers = getPaginationPages(page, totalPages);
   const rooms = ((roomsData as any)?.data || []) as Room[];
 
-  // Get staff list for assignment - we can reuse the rooms data for now
-  // In a real app, there'd be a dedicated staff endpoint
-  const { data: staffData } = useQuery({
-    queryKey: ['staff-list'],
-    queryFn: () => api.get('/auth/seed'),
-    retry: false,
-    enabled: false, // Don't auto-fetch; we'll use a simpler approach
+  const addStaffMutation = useMutation({
+    mutationFn: (body: { staffCode: string; name: string; phone?: string }) =>
+      api.post('/housekeeping/cleaning-staff', body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-search'] });
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-list'] });
+      toast.success('Cleaning staff added');
+      closeStaffDialog();
+    },
+    onError: (err: Error) => {
+      toast.error(err?.message || 'Failed to add cleaning staff');
+    },
   });
-
-  // For now, we'll use a hardcoded list based on the seeded data
-  // In production, there should be a /users endpoint
-  const staffMembers = [
-    { id: 'hotel-staff', name: 'Hotel Manager' },
-    { id: 'reception', name: 'Front Desk' },
-    { id: 'housekeeping-1', name: 'Housekeeper 1' },
-    { id: 'housekeeping-2', name: 'Housekeeper 2' },
-  ];
 
   const createMutation = useMutation({
     mutationFn: (body: any) => api.post('/housekeeping', body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['housekeeping'] });
       queryClient.invalidateQueries({ queryKey: ['housekeeping-count'] });
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-list'] });
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-history'] });
       toast.success('Task created successfully');
       closeCreateDialog();
     },
-    onError: () => toast.error('Failed to create task'),
+    onError: (err: Error) => toast.error(err?.message || 'Failed to create task'),
   });
 
   const updateMutation = useMutation({
@@ -144,33 +176,90 @@ export function HousekeepingPage() {
       queryClient.invalidateQueries({ queryKey: ['housekeeping'] });
       queryClient.invalidateQueries({ queryKey: ['housekeeping-count'] });
       queryClient.invalidateQueries({ queryKey: ['rooms'] });
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-list'] });
+      queryClient.invalidateQueries({ queryKey: ['cleaning-staff-history'] });
       toast.success('Task updated successfully');
-      setStartDialogOpen(false);
-      setStartTask(null);
-      setStartAssignedTo('');
-      setStartNotes('');
+      closeStartDialog();
     },
-    onError: () => toast.error('Failed to update task'),
+    onError: (err: Error) => toast.error(err?.message || 'Failed to update task'),
   });
 
-  const closeCreateDialog = () => {
-    setCreateDialogOpen(false);
+  const resetCreateForm = () => {
     setFormRoomId('');
     setFormTaskType('cleaning');
-    setFormAssignedTo('');
+    setFormCleaningStaffId('');
+    setFormCleaningStaffLabel('');
     setFormNotes('');
   };
 
+  const resetStaffForm = () => {
+    setStaffCode('');
+    setStaffName('');
+    setStaffPhone('');
+  };
+
+  const resetStartForm = () => {
+    setStartCleaningStaffId('');
+    setStartCleaningStaffLabel('');
+    setStartNotes('');
+  };
+
+  const closeCreateDialog = () => {
+    setCreateDialogOpen(false);
+    resetCreateForm();
+  };
+
+  const closeStaffDialog = () => {
+    setStaffDialogOpen(false);
+    resetStaffForm();
+  };
+
+  const closeStartDialog = () => {
+    setStartDialogOpen(false);
+    setStartTask(null);
+    resetStartForm();
+  };
+
+  const openCreateDialog = () => {
+    resetCreateForm();
+    setCreateDialogOpen(true);
+  };
+
+  const openStaffDialog = () => {
+    resetStaffForm();
+    setStaffDialogOpen(true);
+  };
+
+  const handleAddStaff = () => {
+    if (!staffCode.trim()) {
+      toast.error('Staff ID is required');
+      return;
+    }
+    if (!staffName.trim()) {
+      toast.error('Staff name is required');
+      return;
+    }
+    addStaffMutation.mutate({
+      staffCode: staffCode.trim(),
+      name: staffName.trim(),
+      phone: staffPhone.trim() || undefined,
+    });
+  };
+
   const handleCreate = () => {
-    if (!formRoomId || !formTaskType || !formAssignedTo) {
-      toast.error('Room, task type, and assigned staff are required');
+    if (!formRoomId || !formTaskType) {
+      toast.error('Room and task type are required');
+      return;
+    }
+    if (!formCleaningStaffId) {
+      toast.error('Please assign cleaning staff');
       return;
     }
     createMutation.mutate({
       roomId: formRoomId,
       taskType: formTaskType,
-      assignedTo: formAssignedTo,
-      notes: formNotes,
+      cleaningStaffId: formCleaningStaffId,
+      notes: formNotes.trim() || undefined,
     });
   };
 
@@ -180,23 +269,33 @@ export function HousekeepingPage() {
 
   const openStartDialog = (task: HousekeepingTask) => {
     setStartTask(task);
-    setStartAssignedTo(task.assignedTo || '');
+    resetStartForm();
     setStartNotes(task.notes || '');
     setStartDialogOpen(true);
   };
 
   const handleStartTask = () => {
     if (!startTask) return;
-    if (!startAssignedTo.trim()) {
-      toast.error('Staff user ID is required');
+    if (!startCleaningStaffId) {
+      toast.error('Please assign cleaning staff');
       return;
     }
     updateMutation.mutate({
       id: startTask.id,
       status: 'IN_PROGRESS',
-      assignedTo: startAssignedTo.trim(),
-      notes: startNotes || null,
+      cleaningStaffId: startCleaningStaffId,
+      notes: startNotes.trim() || null,
     });
+  };
+
+  const handleSelectFormStaff = (staff: CleaningStaffResult) => {
+    setFormCleaningStaffId(staff.id);
+    setFormCleaningStaffLabel(formatCleaningStaffLabel(staff));
+  };
+
+  const handleSelectStartStaff = (staff: CleaningStaffResult) => {
+    setStartCleaningStaffId(staff.id);
+    setStartCleaningStaffLabel(formatCleaningStaffLabel(staff));
   };
 
   const getTaskTypeIcon = (type: string) => {
@@ -220,19 +319,41 @@ export function HousekeepingPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold">Housekeeping</h2>
           <p className="text-sm text-muted-foreground">Manage cleaning and maintenance tasks</p>
         </div>
-        <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={() => setCreateDialogOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" />
-          Create Task
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {activeTab === 'tasks' && (
+            <>
+              <Button variant="outline" onClick={openStaffDialog}>
+                <UserPlus className="w-4 h-4 mr-2" />
+                Add Cleaning Staff
+              </Button>
+              <Button className="bg-amber-600 hover:bg-amber-700 text-white" onClick={openCreateDialog}>
+                <Plus className="w-4 h-4 mr-2" />
+                Create Task
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Status Summary */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          <TabsTrigger value="staff">
+            <Users className="w-4 h-4 mr-1.5" />
+            Cleaning Staff
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="staff" className="mt-4">
+          <CleaningStaffListPanel />
+        </TabsContent>
+
+        <TabsContent value="tasks" className="mt-4 space-y-6">
       <div className="grid grid-cols-3 gap-4">
         <Card className="bg-amber-50 border-amber-200">
           <CardContent className="p-4 flex items-center gap-3">
@@ -263,7 +384,6 @@ export function HousekeepingPage() {
         </Card>
       </div>
 
-      {/* Filter */}
       <div className="flex items-center gap-3">
         <Select
           value={statusFilter}
@@ -284,7 +404,6 @@ export function HousekeepingPage() {
         </Select>
       </div>
 
-      {/* Tasks Table */}
       {isLoading ? (
         <Card>
           <CardContent className="space-y-3 p-4">
@@ -296,7 +415,7 @@ export function HousekeepingPage() {
       ) : (
         <div className="rounded-xl border border-border bg-card text-card-foreground shadow-sm">
           <div className="max-h-[min(70vh,720px)] overflow-auto custom-scrollbar">
-            <table className="bookings-sticky-table w-full min-w-[800px] text-sm">
+            <table className="bookings-sticky-table bookings-sticky-table--in-scroll w-full min-w-[800px] text-sm">
               <thead>
                 <tr className="border-b border-border">
                   <th className="p-3 text-left font-medium">Room</th>
@@ -323,7 +442,10 @@ export function HousekeepingPage() {
                     </div>
                   </td>
                   <td className="p-3">
-                    <p className="font-medium">{task.assigned?.name || 'Unassigned'}</p>
+                    <p className="font-medium">{taskAssigneeName(task)}</p>
+                    {taskAssigneeId(task) && (
+                      <p className="text-xs text-muted-foreground">ID: {taskAssigneeId(task)}</p>
+                    )}
                   </td>
                   <td className="p-3">
                     <StatusBadge status={task.status} />
@@ -445,8 +567,57 @@ export function HousekeepingPage() {
           </div>
         </div>
       )}
+        </TabsContent>
+      </Tabs>
 
-      {/* Create Task Dialog */}
+      <Dialog open={staffDialogOpen} onOpenChange={(open) => { if (!open) closeStaffDialog(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Cleaning Staff</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Staff ID *</Label>
+              <Input
+                value={staffCode}
+                onChange={(e) => setStaffCode(e.target.value)}
+                placeholder="e.g. HK-001"
+                autoComplete="off"
+              />
+              <p className="text-xs text-muted-foreground">Enter the ID you assign to this staff member</p>
+            </div>
+            <div className="space-y-2">
+              <Label>Staff Name *</Label>
+              <Input
+                value={staffName}
+                onChange={(e) => setStaffName(e.target.value)}
+                placeholder="Full name"
+                autoComplete="off"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Phone</Label>
+              <Input
+                value={staffPhone}
+                onChange={(e) => setStaffPhone(e.target.value)}
+                placeholder="Optional"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeStaffDialog}>Cancel</Button>
+            <Button
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              onClick={handleAddStaff}
+              disabled={addStaffMutation.isPending}
+            >
+              {addStaffMutation.isPending ? 'Saving...' : 'Add Staff'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={createDialogOpen} onOpenChange={(open) => { if (!open) closeCreateDialog(); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -455,7 +626,7 @@ export function HousekeepingPage() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Room *</Label>
-              <Select value={formRoomId} onValueChange={setFormRoomId}>
+              <Select value={formRoomId || undefined} onValueChange={setFormRoomId}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select room" />
                 </SelectTrigger>
@@ -481,18 +652,24 @@ export function HousekeepingPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>Assign To *</Label>
-              <Input
-                value={formAssignedTo}
-                onChange={(e) => setFormAssignedTo(e.target.value)}
-                placeholder="Staff user ID"
-              />
-              <p className="text-xs text-muted-foreground">Enter the user ID of the staff member</p>
-            </div>
+            <CleaningStaffSearchField
+              label="Assign Staff *"
+              selectedId={formCleaningStaffId}
+              selectedLabel={formCleaningStaffLabel}
+              onSelect={handleSelectFormStaff}
+              onClear={() => {
+                setFormCleaningStaffId('');
+                setFormCleaningStaffLabel('');
+              }}
+            />
             <div className="space-y-2">
               <Label>Notes</Label>
-              <Textarea value={formNotes} onChange={(e) => setFormNotes(e.target.value)} placeholder="Additional instructions..." rows={2} />
+              <Textarea
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+                placeholder="Additional instructions..."
+                rows={2}
+              />
             </div>
           </div>
           <DialogFooter>
@@ -508,18 +685,7 @@ export function HousekeepingPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Start Cleaning Dialog */}
-      <Dialog
-        open={startDialogOpen}
-        onOpenChange={(open) => {
-          setStartDialogOpen(open);
-          if (!open) {
-            setStartTask(null);
-            setStartAssignedTo('');
-            setStartNotes('');
-          }
-        }}
-      >
+      <Dialog open={startDialogOpen} onOpenChange={(open) => { if (!open) closeStartDialog(); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Start Cleaning</DialogTitle>
@@ -531,14 +697,16 @@ export function HousekeepingPage() {
                 {startTask?.taskType ? startTask.taskType.replace('_', ' ') : 'Cleaning task'}
               </p>
             </div>
-            <div className="space-y-2">
-              <Label>Staff User ID *</Label>
-              <Input
-                value={startAssignedTo}
-                onChange={(e) => setStartAssignedTo(e.target.value)}
-                placeholder="Enter staff user id"
-              />
-            </div>
+            <CleaningStaffSearchField
+              label="Assign Staff *"
+              selectedId={startCleaningStaffId}
+              selectedLabel={startCleaningStaffLabel}
+              onSelect={handleSelectStartStaff}
+              onClear={() => {
+                setStartCleaningStaffId('');
+                setStartCleaningStaffLabel('');
+              }}
+            />
             <div className="space-y-2">
               <Label>Notes</Label>
               <Textarea
@@ -550,7 +718,7 @@ export function HousekeepingPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setStartDialogOpen(false)}>
+            <Button variant="outline" onClick={closeStartDialog}>
               Cancel
             </Button>
             <Button
@@ -566,4 +734,3 @@ export function HousekeepingPage() {
     </div>
   );
 }
-

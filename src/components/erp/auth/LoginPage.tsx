@@ -5,6 +5,7 @@ import Image from 'next/image';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { EmailInput } from '@/components/ui/email-input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
@@ -20,12 +21,17 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  const [emailBlocking, setEmailBlocking] = useState(false);
   const login = useAuthStore((s) => s.login);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
       toast.error('Please enter email and password');
+      return;
+    }
+    if (emailBlocking) {
+      toast.error('Enter a valid email address');
       return;
     }
 
@@ -115,12 +121,13 @@ export function LoginPage() {
             <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
+                <EmailInput
                   id="email"
-                  type="email"
                   placeholder="your@email.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={setEmail}
+                  mode="format-only"
+                  onValidationChange={(result) => setEmailBlocking(result.isBlocking)}
                   disabled={loading}
                   className="h-11"
                 />
