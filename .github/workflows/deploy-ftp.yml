@@ -11,11 +11,14 @@
 #   DATABASE_URL     — production MySQL (remote hostname, NOT localhost)
 #                      e.g. mysql://user:pass@server123.yourhost.com:3306/dbname
 #
-# One-time on cPanel:
-#   1. Create folder rrpdreaminn (or use FTP_SERVER_DIR path)
-#   2. Setup Node.js App → startup file: server.js → URL: rakib07.com
-#   3. Add env vars (DATABASE_URL, etc.) in Node.js panel — never upload .env via FTP
-#   4. Remote MySQL → add host "%" so GitHub Actions can reach your database
+# One-time on cPanel (critical — without this you get 404):
+#   1. FTP_SERVER_DIR must match the Node.js "Application root" exactly
+#      e.g. /home/USERNAME/rrpdreaminn/  (trailing slash required)
+#   2. Setup Node.js App → Application startup file: server.js
+#   3. Application URL must be your domain (e.g. rakib07.com)
+#   4. Add env vars: NODE_ENV=production, DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL
+#   5. Click "Restart" in Node.js panel after the first deploy
+#   6. Remote MySQL → add host "%" so GitHub Actions can reach your database
 
 name: Deploy to cPanel (FTP)
 
@@ -62,6 +65,7 @@ jobs:
         run: |
           npx prisma generate
           npm run build
+          node scripts/verify-standalone-build.js
           mkdir -p .next/standalone/tmp
           date -u +"%Y-%m-%dT%H:%M:%SZ" > .next/standalone/tmp/restart.txt
 
@@ -75,8 +79,12 @@ jobs:
           protocol: ftps
           local-dir: ./.next/standalone/
           server-dir: ${{ secrets.FTP_SERVER_DIR }}
+          dangerous-clean-slate: false
           exclude: |
+            **/.git*
+            **/.git*/**
             **/.env
             **/.env.*
-            **/.git/**
             **/.github/**
+            **/.htaccess
+            **/.well-known/**
